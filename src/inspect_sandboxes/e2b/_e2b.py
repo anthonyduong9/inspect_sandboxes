@@ -1,0 +1,424 @@
+"""E2B sandbox provider."""
+
+from __future__ import annotations
+
+import os
+import sys
+import uuid
+from contextvars import ContextVar
+from logging import getLogger
+
+from e2b import AsyncSandbox, SandboxQuery
+from inspect_ai.util import (
+    ComposeConfig,
+    SandboxEnvironment,
+    SandboxEnvironmentConfigType,
+    is_compose_yaml,
+    is_dockerfile,
+    parse_compose_yaml,
+    sandboxenv,
+    trace_message,
+)
+from rich import box, print
+from rich.prompt import Confirm
+from rich.table import Table
+from typing_extensions import override
+
+from inspect_sandboxes._util.naming import make_sandbox_name
+
+from ._compose import (
+    E2BSingleServiceParams,
+    extract_e2b_timeout,
+    extract_x_e2b,
+    resolve_single_service_params,
+)
+from ._dind_env import E2BDinDServiceEnvironment
+from ._dind_project import (
+    DEFAULT_DIND_CPU,
+    DEFAULT_DIND_MEMORY_MB,
+)
+from ._single_env import E2BSingleServiceEnvironment
+from ._template import build_template_for_dockerfile, build_template_for_image
+
+logger = getLogger(__name__)
+
+INSPECT_SANDBOX_METADATA = {"created_by": "inspect-ai"}
+
+# Default Devbox lifetime (seconds). E2B caps this at 3600s for Hobby tier
+# and 86400s for Pro tier.
+_DEFAULT_SANDBOX_TIMEOUT = 3600
+
+_running_sandboxes: ContextVar[list[str]] = ContextVar("e2b_running_sandboxes")
+_run_id: ContextVar[str] = ContextVar("e2b_run_id")
+_template_name: ContextVar[str | None] = ContextVar("e2b_template_name", default=None)
+_compose_params: ContextVar[E2BSingleServiceParams | None] = ContextVar(
+    "e2b_compose_params", default=None
+)
+
+
+def _init_context() -> None:
+    _running_sandboxes.set([])
+    _run_id.set(uuid.uuid4().hex)
+    _template_name.set(None)
+    _compose_params.set(None)
+
+
+def _run_metadata(task_name: str | None = None) -> dict[str, str]:
+    metadata = {**INSPECT_SANDBOX_METADATA, "inspect_run_id": _run_id.get()}
+    if task_name:
+        metadata["task"] = task_name
+    return metadata
+
+
+@sandboxenv(name="e2b")
+class E2BSandboxEnvironment(SandboxEnvironment):
+    """E2B sandbox provider.
+
+    Owns all lifecycle class methods. ``sample_init`` returns instances of
+    ``E2BSingleServiceEnvironment`` or ``E2BDinDServiceEnvironment``.
+    """
+
+    @classmethod
+    def config_files(cls) -> list[str]:
+        return [
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+            "Dockerfile",
+        ]
+
+    @classmethod
+    def is_docker_compatible(cls) -> bool:
+        return True
+
+    @override
+    @classmethod
+    async def task_init(
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+    ) -> None:
+        _init_context()
+
+        # Build the template once per task so all samples share the cached image.
+        if config is None:
+            return
+        if is_dockerfile(config):
+            name = await build_template_for_dockerfile(str(config))
+            _template_name.set(name)
+            return
+        if is_compose_yaml(config) or isinstance(config, ComposeConfig):
+            if isinstance(config, ComposeConfig):
+                compose_config, compose_path = config, None
+            else:
+                compose_config = parse_compose_yaml(config, multiple_services=True)
+                compose_path = config
+            if len(compose_config.services) > 1:
+                # DinD template is built lazily inside sample_init_dind. Stash
+                # the parsed config so sample_init can route to the DinD path.
+                return
+            params = resolve_single_service_params(compose_config, compose_path)
+            _compose_params.set(params)
+            if params.template is not None:
+                _template_name.set(params.template)
+            elif params.dockerfile_path is not None:
+                _template_name.set(
+                    await build_template_for_dockerfile(
+                        params.dockerfile_path,
+                        cpu_count=params.cpu_count,
+                        memory_mb=params.memory_mb,
+                    )
+                )
+            elif params.image is not None:
+                _template_name.set(
+                    await build_template_for_image(
+                        params.image,
+                        cpu_count=params.cpu_count,
+                        memory_mb=params.memory_mb,
+                    )
+                )
+            return
+
+    @override
+    @classmethod
+    async def sample_init(
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+        metadata: dict[str, str],
+    ) -> dict[str, SandboxEnvironment]:
+        template: str | None
+        envs: dict[str, str] | None = None
+        sandbox_timeout: float | int = _DEFAULT_SANDBOX_TIMEOUT
+        extra_metadata: dict[str, str] = {}
+
+        if config is None:
+            template = None
+        elif is_dockerfile(config):
+            template = _template_name.get()
+            if template is None:
+                raise RuntimeError(
+                    "Dockerfile template was not built in task_init. "
+                    "task_init must be called before sample_init."
+                )
+        elif is_compose_yaml(config) or isinstance(config, ComposeConfig):
+            if isinstance(config, ComposeConfig):
+                compose_config, compose_path = config, None
+            else:
+                compose_config = parse_compose_yaml(config, multiple_services=True)
+                compose_path = config
+            if len(compose_config.services) > 1:
+                return await cls._dind_sample_init(
+                    task_name, compose_config, compose_path, metadata
+                )
+            template = _template_name.get()
+            if template is None:
+                raise RuntimeError(
+                    "Compose template was not built in task_init. "
+                    "task_init must be called before sample_init."
+                )
+            params = _compose_params.get()
+            if params is not None:
+                envs = params.envs or None
+                if params.timeout is not None:
+                    sandbox_timeout = params.timeout
+                else:
+                    timeout_override = extract_e2b_timeout(compose_config.extensions)
+                    if timeout_override is not None:
+                        sandbox_timeout = timeout_override
+                extra_metadata = dict(params.metadata)
+        else:
+            raise ValueError(
+                f"Unrecognized config: {config}. "
+                "Expected a compose file (*.yaml/*.yml), Dockerfile, "
+                "ComposeConfig object, or None."
+            )
+
+        run_metadata = {
+            **extra_metadata,
+            **_run_metadata(task_name),
+            "name": make_sandbox_name(task_name, metadata),
+        }
+
+        sandbox = await AsyncSandbox.create(
+            template=template,
+            timeout=int(sandbox_timeout),
+            metadata=run_metadata,
+            envs=envs,
+        )
+        _running_sandboxes.get().append(sandbox.sandbox_id)
+        trace_message(
+            logger,
+            "e2b",
+            f"Created sandbox {sandbox.sandbox_id} for task '{task_name}'",
+        )
+
+        return {"default": E2BSingleServiceEnvironment(sandbox)}
+
+    @classmethod
+    async def _dind_sample_init(
+        cls,
+        task_name: str,
+        compose_config: ComposeConfig,
+        compose_path: str | None,
+        metadata: dict[str, str],
+    ) -> dict[str, SandboxEnvironment]:
+        ext = extract_x_e2b(compose_config.extensions)
+        cpu = int(ext.get("cpu_count", DEFAULT_DIND_CPU))
+        mem = int(ext.get("memory_mb", DEFAULT_DIND_MEMORY_MB))
+
+        sandbox_timeout: float | int = _DEFAULT_SANDBOX_TIMEOUT
+        timeout_override = extract_e2b_timeout(compose_config.extensions)
+        if timeout_override is not None:
+            sandbox_timeout = timeout_override
+
+        extra_metadata: dict[str, str] = {}
+        meta_raw = ext.get("metadata")
+        if isinstance(meta_raw, dict):
+            extra_metadata = {str(k): str(v) for k, v in meta_raw.items()}
+
+        run_metadata = {
+            **extra_metadata,
+            **_run_metadata(task_name),
+            "name": make_sandbox_name(task_name, metadata),
+        }
+
+        envs_raw = ext.get("envs")
+        sandbox_envs = (
+            {str(k): str(v) for k, v in envs_raw.items()}
+            if isinstance(envs_raw, dict)
+            else None
+        )
+
+        envs = await E2BDinDServiceEnvironment.sample_init_dind(
+            compose_config,
+            compose_path,
+            metadata=run_metadata,
+            cpu_count=cpu,
+            memory_mb=mem,
+            sandbox_timeout=sandbox_timeout,
+            sandbox_envs=sandbox_envs,
+        )
+        any_env = next(iter(envs.values())).as_type(E2BDinDServiceEnvironment)
+        _running_sandboxes.get().append(any_env.project.sandbox.sandbox_id)
+        return envs
+
+    @override
+    @classmethod
+    async def sample_cleanup(
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+        environments: dict[str, SandboxEnvironment],
+        interrupted: bool,
+    ) -> None:
+        if not environments:
+            return
+        any_env = next(iter(environments.values()))
+        if isinstance(any_env, E2BDinDServiceEnvironment):
+            await E2BDinDServiceEnvironment.sample_cleanup(
+                task_name, config, environments, interrupted
+            )
+        else:
+            await E2BSingleServiceEnvironment.sample_cleanup(
+                task_name, config, environments, interrupted
+            )
+
+    @override
+    @classmethod
+    async def task_cleanup(
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+        cleanup: bool,
+    ) -> None:
+        if not cleanup:
+            return
+
+        failed_ids: list[str] = []
+        deleted_ids: set[str] = set()
+
+        for sandbox_id in _running_sandboxes.get().copy():
+            try:
+                killed = await AsyncSandbox.kill(sandbox_id)
+                deleted_ids.add(sandbox_id)
+                if killed:
+                    trace_message(logger, "e2b", f"Killed sandbox {sandbox_id}")
+                else:
+                    trace_message(
+                        logger,
+                        "e2b",
+                        f"Sandbox {sandbox_id} already gone, skipping.",
+                    )
+            except Exception as e:
+                failed_ids.append(sandbox_id)
+                logger.error(f"Failed to kill sandbox {sandbox_id}: {e}")
+
+        # Second pass: orphaned sandboxes by run metadata. Catches creation failures
+        # whose IDs were never tracked in _running_sandboxes.
+        try:
+            run_id = _run_id.get()
+        except LookupError:
+            run_id = ""
+        if run_id:
+            try:
+                paginator = AsyncSandbox.list(
+                    query=SandboxQuery(metadata={"inspect_run_id": run_id})
+                )
+                while True:
+                    items = await paginator.next_items()
+                    for info in items:
+                        sandbox_id = info.sandbox_id
+                        if sandbox_id in deleted_ids:
+                            continue
+                        try:
+                            await AsyncSandbox.kill(sandbox_id)
+                            trace_message(
+                                logger, "e2b", f"Killed orphaned sandbox {sandbox_id}"
+                            )
+                        except Exception as e:
+                            failed_ids.append(sandbox_id)
+                            logger.error(
+                                f"Failed to kill orphaned sandbox {sandbox_id}: {e}"
+                            )
+                    if not paginator.has_next:
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to list sandboxes for cleanup: {e}")
+
+        if failed_ids:
+            logger.warning(
+                f"Failed to cleanup {len(failed_ids)} sandbox(es). "
+                f"Failed IDs: {', '.join(failed_ids)}"
+            )
+
+        _running_sandboxes.get().clear()
+
+    @override
+    @classmethod
+    async def cli_cleanup(cls, id: str | None) -> None:
+        if id is not None:
+            try:
+                killed = await AsyncSandbox.kill(id)
+                if killed:
+                    print(f"Successfully killed sandbox {id}")
+                else:
+                    print(f"Sandbox {id} not found (already deleted).")
+            except Exception as e:
+                print(f"[red]Error killing sandbox {id}: {e}[/red]")
+                sys.exit(1)
+            return
+
+        paginator = AsyncSandbox.list(
+            query=SandboxQuery(metadata=INSPECT_SANDBOX_METADATA)
+        )
+        sandboxes: list[str] = []
+        while True:
+            items = await paginator.next_items()
+            sandboxes.extend(info.sandbox_id for info in items)
+            if not paginator.has_next:
+                break
+
+        if not sandboxes:
+            print("No E2B sandboxes found to clean up.")
+            return
+
+        table = Table(
+            box=box.SQUARE,
+            show_lines=False,
+            title_style="bold",
+            title_justify="left",
+        )
+        table.add_column("Sandbox ID")
+        for sandbox_id in sandboxes:
+            table.add_row(sandbox_id)
+        print(table)
+
+        is_interactive = sys.stdin.isatty()
+        is_ci = "CI" in os.environ
+        is_pytest = "PYTEST_CURRENT_TEST" in os.environ
+
+        if is_interactive and not is_ci and not is_pytest:
+            if not Confirm.ask(
+                f"Are you sure you want to kill ALL {len(sandboxes)} sandbox(es) above?"
+            ):
+                print("Cancelled.")
+                return
+
+        success_count = 0
+        failure_count = 0
+        for sandbox_id in sandboxes:
+            try:
+                await AsyncSandbox.kill(sandbox_id)
+                success_count += 1
+            except Exception as e:
+                print(f"[yellow]Error killing sandbox {sandbox_id}: {e}[/yellow]")
+                failure_count += 1
+
+        print(f"\n[green]Successfully killed: {success_count}[/green]")
+        if failure_count > 0:
+            print(f"[red]Failed to kill: {failure_count}[/red]")
+            sys.exit(1)
+        else:
+            print("Complete.")

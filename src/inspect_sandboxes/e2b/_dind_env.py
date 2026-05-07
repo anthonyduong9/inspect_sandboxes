@@ -9,28 +9,26 @@ import tempfile
 import uuid
 from logging import getLogger
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, overload
+from typing import Literal, overload
 
 import yaml
-from daytona_sdk import AsyncDaytona, Resources
 from inspect_ai.util import (
     ComposeConfig,
     ExecResult,
+    OutputLimitExceededError,
     SandboxEnvironment,
     SandboxEnvironmentConfigType,
+    SandboxEnvironmentLimits,
     trace_message,
 )
 from typing_extensions import override
 
 from inspect_sandboxes._util.compose import find_default_service
 
-from ._compose import (
-    aggregate_resources,
-    apply_daytona_extensions,
-    extract_daytona_timeout,
-)
 from ._dind_project import (
-    DaytonaDinDProject,
+    DEFAULT_DIND_CPU,
+    DEFAULT_DIND_MEMORY_MB,
+    E2BDinDProject,
     compose_exec,
     create_dind_project,
     destroy_dind_project,
@@ -38,28 +36,18 @@ from ._dind_project import (
     vm_exec,
 )
 from ._retry import run_with_timeout_retry
-from ._sandbox_utils import (
-    build_stdin_command,
-    decode_file_content,
-    delete_sandbox,
-    sdk_download,
-    sdk_upload,
-    verify_file_size,
-)
 
 logger = getLogger(__name__)
 
 
-class DaytonaDinDServiceEnvironment(SandboxEnvironment):
-    """SandboxEnvironment for a single service inside a DinD compose project.
+class E2BDinDServiceEnvironment(SandboxEnvironment):
+    """SandboxEnvironment for a single compose service inside a DinD Devbox.
 
     Routes exec/read/write through ``docker compose exec/cp <service>``
-    inside the shared DinD sandbox.
+    inside the shared E2B Devbox.
     """
 
-    def __init__(
-        self, project: DaytonaDinDProject, service: str, working_dir: str
-    ) -> None:
+    def __init__(self, project: E2BDinDProject, service: str, working_dir: str) -> None:
         super().__init__()
         self.project = project
         self.service = service
@@ -68,27 +56,31 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
     @classmethod
     async def sample_init_dind(
         cls,
-        client: AsyncDaytona,
         config: ComposeConfig,
         compose_file: str | None,
-        labels: dict[str, str],
-        name: str | None = None,
+        *,
+        metadata: dict[str, str],
+        cpu_count: int = DEFAULT_DIND_CPU,
+        memory_mb: int = DEFAULT_DIND_MEMORY_MB,
+        sandbox_timeout: int | float = 3600,
+        sandbox_envs: dict[str, str] | None = None,
     ) -> dict[str, SandboxEnvironment]:
         """Create DinD sandbox and return per-service environments.
 
         Args:
-            client: Daytona client.
             config: Parsed compose configuration with >1 service.
             compose_file: Local path to the compose file.
-            labels: Labels to apply to the sandbox.
-            name: Optional name for the DinD VM sandbox (visible in the
-                Daytona dashboard).
+            metadata: Metadata to apply to the sandbox.
+            cpu_count: CPUs for the DinD template build.
+            memory_mb: Memory (MiB) for the DinD template build.
+            sandbox_timeout: Devbox lifetime in seconds (from ``x-e2b.timeout``
+                or default). E2B caps at 3600s (Hobby) / 86400s (Pro).
+            sandbox_envs: Environment variables set on the Devbox VM (not on
+                individual compose services).
 
         Returns:
             Dict of environments with the default service first.
         """
-        # When a ComposeConfig object is passed without a compose file path,
-        # serialize it to a temporary YAML file for the DinD build context.
         tmp_dir: Path | None = None
         if compose_file is None:
             try:
@@ -107,55 +99,19 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
                 ) from e
 
         try:
-            # Extract x-daytona sandbox-level params
-            sandbox_params: dict[str, Any] = {}
-            apply_daytona_extensions(sandbox_params, config.extensions)
-
-            # DinD sandbox must have network — warn if user tried to block it
-            if sandbox_params.pop("network_block_all", None):
-                logger.warning(
-                    "network_block_all is ignored for DinD multi-service sandboxes "
-                    "(Docker daemon requires network access for image pulls)."
-                )
-
-            # Merge labels
-            x_labels = sandbox_params.pop("labels", {})
-            merged_labels = {**x_labels, **labels}
-
-            # Snapshot override from x-daytona.snapshot
-            snapshot = sandbox_params.pop("snapshot", None)
-
-            # x-daytona.timeout — forwarded to client.create(), not the params model
-            create_timeout = extract_daytona_timeout(config.extensions)
-
-            # Resources: x-daytona.resources overrides per-service aggregation
-            resources_override = sandbox_params.pop("resources", None)
-            resources: Resources | None
-            if resources_override:
-                resources = Resources(
-                    cpu=resources_override.get("cpu"),
-                    memory=resources_override.get("memory"),
-                    gpu=resources_override.get("gpu"),
-                )
-            else:
-                resources = aggregate_resources(config)
-
             project = await create_dind_project(
-                client,
                 config,
                 compose_file,
-                labels=merged_labels,
-                resources=resources,
-                sandbox_params=sandbox_params,
-                snapshot=snapshot,
-                create_timeout=create_timeout,
-                name=name,
+                metadata=metadata,
+                cpu_count=cpu_count,
+                memory_mb=memory_mb,
+                sandbox_timeout=sandbox_timeout,
+                sandbox_envs=sandbox_envs,
             )
         finally:
             if tmp_dir is not None:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        # Build per-service environments with default first
         default_name, _ = find_default_service(config)
         environments: dict[str, SandboxEnvironment] = {}
         for svc_name in project.services:
@@ -177,26 +133,17 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
         if not environments or interrupted:
             return
 
-        # Deferred import to avoid circular dependency:
-        # _daytona.py imports _dind_env.py (for DaytonaDinDServiceEnvironment),
-        # and _dind_env.py needs _daytona_client from _daytona.py for cleanup.
-        from ._daytona import _daytona_client
-
-        client = _daytona_client.get()
-        if client is None:
-            return
-
         any_env = next(iter(environments.values())).as_type(cls)
         project = any_env.project
         try:
             await destroy_dind_project(project)
-            await delete_sandbox(client, project.sandbox)
+            await project.sandbox.kill()
         except Exception as e:
             trace_message(
                 logger,
-                "daytona",
-                f"Error cleaning up DinD sandbox {project.sandbox.id} for task '{task_name}': {e}. "
-                "Will retry in task_cleanup.",
+                "e2b",
+                f"Error cleaning up DinD sandbox {project.sandbox.sandbox_id} "
+                f"for task '{task_name}': {e}. Will retry in task_cleanup.",
             )
 
     @override
@@ -211,16 +158,10 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
         timeout_retry: bool = True,
         concurrency: bool = True,
     ) -> ExecResult[str]:
-        # Timeout: The Daytona server kills the VM-level process tree on
-        # timeout, which tears down the docker compose exec session and its
-        # in-container processes. No in-container ``timeout`` wrapping needed.
-
-        # Resolve working directory
         workdir = cwd if cwd is not None else self._working_dir
         if not PurePosixPath(workdir).is_absolute():
             workdir = str(PurePosixPath(self._working_dir) / workdir)
 
-        # Build compose exec command
         exec_cmd = ["exec", "-T", "-w", workdir]
         if user is not None:
             exec_cmd.extend(["--user", user])
@@ -228,46 +169,48 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
             for k, v in env.items():
                 exec_cmd.extend(["-e", f"{k}={v}"])
 
-        # Stdin: two-hop upload (VM temp -> compose cp -> container), then pipe
         stdin_vm_file: str | None = None
         stdin_container_file: str | None = None
         if input is not None:
             data = input.encode("utf-8") if isinstance(input, str) else input
             stdin_vm_file = f"/tmp/.inspect-stdin-{uuid.uuid4().hex}"
             stdin_container_file = f"/tmp/.inspect-stdin-{uuid.uuid4().hex}"
-            await sdk_upload(self.project.sandbox, stdin_vm_file, data)
-            cp_exit, cp_output = await compose_exec(
+            await self.project.sandbox.files.write(stdin_vm_file, data)
+            cp_exit, _, cp_err = await compose_exec(
                 self.project,
                 ["cp", stdin_vm_file, f"{self.service}:{stdin_container_file}"],
                 timeout=30,
             )
             if cp_exit != 0:
-                raise RuntimeError(
-                    f"Failed to copy stdin to {self.service}: {cp_output}"
-                )
-            stdin_cmd = build_stdin_command(cmd, stdin_container_file)
+                raise RuntimeError(f"Failed to copy stdin to {self.service}: {cp_err}")
+            stdin_cmd = self._build_stdin_command(cmd, stdin_container_file)
             exec_cmd.extend([self.service, "sh", "-c", stdin_cmd])
         else:
             exec_cmd.extend([self.service, *cmd])
 
         async def _run(t: int | None) -> ExecResult[str]:
-            exit_code, output = await compose_exec(self.project, exec_cmd, timeout=t)
+            exit_code, stdout, stderr = await compose_exec(
+                self.project, exec_cmd, timeout=t
+            )
             return ExecResult(
                 success=exit_code == 0,
                 returncode=exit_code,
-                stdout=output,
-                stderr="",
+                stdout=stdout,
+                stderr=stderr,
             )
 
         try:
             return await run_with_timeout_retry(_run, timeout, timeout_retry)
         finally:
             if stdin_vm_file is not None:
-                await vm_exec(
-                    self.project.sandbox,
-                    f"rm -f {shlex.quote(stdin_vm_file)}",
-                    timeout=10,
-                )
+                try:
+                    await vm_exec(
+                        self.project.sandbox,
+                        f"rm -f {shlex.quote(stdin_vm_file)}",
+                        timeout=10,
+                    )
+                except Exception:
+                    pass
 
     @override
     async def write_file(self, file: str, contents: str | bytes) -> None:
@@ -284,20 +227,23 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
         data = contents.encode("utf-8") if isinstance(contents, str) else contents
         temp = f"/tmp/.inspect-write-{uuid.uuid4().hex}"
         try:
-            await sdk_upload(self.project.sandbox, temp, data)
-            exit_code, output = await compose_exec(
+            await self.project.sandbox.files.write(temp, data)
+            exit_code, _, stderr = await compose_exec(
                 self.project,
                 ["cp", temp, f"{self.service}:{file}"],
                 timeout=120,
             )
             if exit_code != 0:
                 raise RuntimeError(
-                    f"docker compose cp to {self.service}:{file} failed: {output}"
+                    f"docker compose cp to {self.service}:{file} failed: {stderr}"
                 )
         finally:
-            await vm_exec(
-                self.project.sandbox, f"rm -f {shlex.quote(temp)}", timeout=10
-            )
+            try:
+                await vm_exec(
+                    self.project.sandbox, f"rm -f {shlex.quote(temp)}", timeout=10
+                )
+            except Exception:
+                pass
 
     @overload
     async def read_file(self, file: str, text: Literal[True] = True) -> str: ...
@@ -309,31 +255,51 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
     async def read_file(self, file: str, text: bool = True) -> str | bytes:
         """Two-hop read: docker compose cp from container -> SDK download from sandbox."""
         file = self._container_file(file)
-        await verify_file_size(self._is_directory, self._get_file_size, file)
+        await self._verify_read_size(file)
 
         temp = f"/tmp/.inspect-read-{uuid.uuid4().hex}"
         try:
-            exit_code, output = await compose_exec(
+            exit_code, _, stderr = await compose_exec(
                 self.project,
                 ["cp", f"{self.service}:{file}", temp],
                 timeout=120,
             )
             if exit_code != 0:
-                msg = output.lower()
+                msg = stderr.lower()
                 if "no such" in msg or "not found" in msg:
                     raise FileNotFoundError(
                         errno.ENOENT, "No such file or directory", file
                     )
                 raise RuntimeError(
-                    f"docker compose cp from {self.service}:{file} failed: {output}"
+                    f"docker compose cp from {self.service}:{file} failed: {stderr}"
                 )
-            contents_bytes = await sdk_download(self.project.sandbox, temp)
+            data = await self.project.sandbox.files.read(temp, format="bytes")
+            data_bytes = bytes(data)
         finally:
-            await vm_exec(
-                self.project.sandbox, f"rm -f {shlex.quote(temp)}", timeout=10
-            )
+            try:
+                await vm_exec(
+                    self.project.sandbox, f"rm -f {shlex.quote(temp)}", timeout=10
+                )
+            except Exception:
+                pass
 
-        return decode_file_content(contents_bytes, file, text)
+        if text:
+            try:
+                return data_bytes.decode("utf-8")
+            except UnicodeDecodeError as e:
+                raise UnicodeDecodeError(
+                    e.encoding,
+                    e.object,
+                    e.start,
+                    e.end,
+                    f"Failed to decode {file}: {e.reason}",
+                ) from e
+        return data_bytes
+
+    @staticmethod
+    def _build_stdin_command(cmd: list[str], stdin_file: str) -> str:
+        quoted = shlex.quote(stdin_file)
+        return f"{shlex.join(cmd)} < {quoted}; _ec=$?; rm -f {quoted}; exit $_ec"
 
     def _container_file(self, file: str) -> str:
         """Resolve relative path against working directory."""
@@ -343,7 +309,7 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
         return str(path)
 
     async def _is_directory(self, path: str) -> bool:
-        exit_code, _ = await compose_exec(
+        exit_code, _, _ = await compose_exec(
             self.project,
             ["exec", "-T", self.service, "test", "-d", path],
             timeout=10,
@@ -352,7 +318,7 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
 
     async def _get_file_size(self, path: str) -> int:
         # Use wc -c for portability — stat -c %s is GNU/BusyBox-specific
-        exit_code, output = await compose_exec(
+        exit_code, stdout, _ = await compose_exec(
             self.project,
             ["exec", "-T", self.service, "sh", "-c", f"wc -c < {shlex.quote(path)}"],
             timeout=10,
@@ -360,15 +326,25 @@ class DaytonaDinDServiceEnvironment(SandboxEnvironment):
         if exit_code != 0:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", path)
         try:
-            return int(output.strip())
+            return int(stdout.strip())
         except ValueError as e:
             raise RuntimeError(f"Failed to parse file size for {path}") from e
 
+    async def _verify_read_size(self, file: str) -> None:
+        if await self._is_directory(file):
+            raise IsADirectoryError(errno.EISDIR, "Is a directory", file)
+        size = await self._get_file_size(file)
+        if size > SandboxEnvironmentLimits.MAX_READ_FILE_SIZE:
+            raise OutputLimitExceededError(
+                limit_str=SandboxEnvironmentLimits.MAX_READ_FILE_SIZE_STR,
+                truncated_output=None,
+            )
+
     async def _create_parent_folder(self, path: str) -> None:
-        exit_code, output = await compose_exec(
+        exit_code, _, stderr = await compose_exec(
             self.project,
             ["exec", "-T", self.service, "mkdir", "-p", path],
             timeout=10,
         )
         if exit_code != 0:
-            raise RuntimeError(f"Failed to create directory {path}: {output}")
+            raise RuntimeError(f"Failed to create directory {path}: {stderr}")

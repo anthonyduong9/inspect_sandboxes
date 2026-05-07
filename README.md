@@ -11,6 +11,7 @@ For sandbox concepts and the `SandboxEnvironment` API, see the [Inspect AI sandb
 | Provider | Registry Name | Multi-service compose | Requirements |
 |----------|---------------|-----------------------|--------------|
 | [Daytona](https://www.daytona.io) | `daytona` | Yes (DinD) | Daytona account + API key |
+| [E2B](https://e2b.dev) | `e2b` | Yes (DinD) | E2B account + API key |
 | [Modal](https://modal.com) | `modal` | No ([why?](https://meridianlabs-ai.github.io/inspect_sandboxes/modal.html#modal-limitations)) | Modal account |
 
 ## Installation

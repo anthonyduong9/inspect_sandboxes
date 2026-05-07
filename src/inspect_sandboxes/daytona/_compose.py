@@ -11,6 +11,7 @@ from daytona_sdk import (
 from inspect_ai.util import ComposeConfig, ComposeService
 
 from inspect_sandboxes._util.compose import (
+    find_default_service,
     parse_environment,
     parse_memory,
     resolve_dockerfile_path,
@@ -96,24 +97,6 @@ def create_single_service_params(
         labels=merged_labels,
         **sandbox_params,
     )
-
-
-def find_default_service(config: ComposeConfig) -> tuple[str, ComposeService]:
-    """Find the default service in a compose config.
-
-    Priority: x-default: true -> service named "default" or "main" -> first service.
-
-    Returns:
-        Tuple of (service_name, service_config).
-    """
-    for name, svc in config.services.items():
-        if svc.x_default:
-            return name, svc
-    for candidate in ("default", "main"):
-        if candidate in config.services:
-            return candidate, config.services[candidate]
-    name = next(iter(config.services))
-    return name, config.services[name]
 
 
 def aggregate_resources(config: ComposeConfig) -> Resources | None:
