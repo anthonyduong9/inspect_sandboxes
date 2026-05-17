@@ -52,9 +52,7 @@ async def test_full_lifecycle(mock_sandbox: MagicMock) -> None:
     with patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls):
         await E2BSandboxEnvironment.task_init("test_task", None)
 
-        envs = await E2BSandboxEnvironment.sample_init(
-            "test_task", None, {"__sample_id__": "sample1"}
-        )
+        envs = await E2BSandboxEnvironment.sample_init("test_task", None, {})
 
         assert "default" in envs
         assert isinstance(envs["default"], E2BSingleServiceEnvironment)
@@ -93,7 +91,7 @@ async def test_dockerfile_config_builds_template_in_task_init(
 ) -> None:
     """task_init builds the template once; sample_init passes the cached name."""
     dockerfile = tmp_path / "Dockerfile"
-    dockerfile.write_text("FROM ubuntu:24.04\n")
+    dockerfile.write_text("FROM python:3.12\n")
     mock_cls = make_mock_async_sandbox_cls(mock_sandbox)
     with (
         patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls),
@@ -104,9 +102,7 @@ async def test_dockerfile_config_builds_template_in_task_init(
         await E2BSandboxEnvironment.task_init("test_task", str(dockerfile))
         build.assert_awaited_once_with(str(dockerfile))
 
-        envs = await E2BSandboxEnvironment.sample_init(
-            "test_task", str(dockerfile), {"__sample_id__": "s"}
-        )
+        envs = await E2BSandboxEnvironment.sample_init("test_task", str(dockerfile), {})
         assert "default" in envs
         create_kwargs = mock_cls.create.await_args.kwargs
         assert create_kwargs["template"] == "inspect-sandboxes-abc123"
@@ -135,9 +131,7 @@ async def test_single_service_compose_image_builds_template(
         assert build.await_args is not None
         assert build.await_args.args[0] == "python:3.12"
 
-        await E2BSandboxEnvironment.sample_init(
-            "test_task", str(compose), {"__sample_id__": "s"}
-        )
+        await E2BSandboxEnvironment.sample_init("test_task", str(compose), {})
         create_kwargs = mock_cls.create.await_args.kwargs
         assert create_kwargs["template"] == "inspect-sandboxes-image-hash"
         assert create_kwargs["envs"] == {"FOO": "bar"}
@@ -163,9 +157,7 @@ async def test_single_service_compose_with_x_e2b_template_skips_build(
         bi.assert_not_called()
         bd.assert_not_called()
 
-        await E2BSandboxEnvironment.sample_init(
-            "test_task", str(compose), {"__sample_id__": "s"}
-        )
+        await E2BSandboxEnvironment.sample_init("test_task", str(compose), {})
         assert mock_cls.create.await_args.kwargs["template"] == "my-prebuilt"
 
 
@@ -206,9 +198,7 @@ async def test_sample_init_multi_service_routes_to_dind(
         ) as init_dind,
     ):
         await E2BSandboxEnvironment.task_init("test_task", str(compose))
-        envs = await E2BSandboxEnvironment.sample_init(
-            "test_task", str(compose), {"__sample_id__": "s"}
-        )
+        envs = await E2BSandboxEnvironment.sample_init("test_task", str(compose), {})
         assert set(envs.keys()) == {"a", "b"}
 
         assert init_dind.await_args is not None
@@ -226,7 +216,7 @@ async def test_sample_init_resolves_sample_override_when_task_config_none(
 ) -> None:
     """sample_init resolves the template from the sample's config even when task_init saw None."""
     dockerfile = tmp_path / "Dockerfile"
-    dockerfile.write_text("FROM ubuntu:24.04\n")
+    dockerfile.write_text("FROM python:3.12\n")
     mock_cls = make_mock_async_sandbox_cls(mock_sandbox)
     with (
         patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls),
@@ -248,10 +238,10 @@ async def test_sample_init_uses_sample_config_when_differs_from_task(
     tmp_path: Any,
 ) -> None:
     """sample_init uses the sample's Dockerfile even when task_init saw a different one."""
-    dockerfile_a = tmp_path / "A.Dockerfile"
-    dockerfile_a.write_text("FROM ubuntu:24.04\n")
-    dockerfile_b = tmp_path / "B.Dockerfile"
-    dockerfile_b.write_text("FROM debian:12\n")
+    dockerfile_python = tmp_path / "Dockerfile.python"
+    dockerfile_python.write_text("FROM python:3.12\n")
+    dockerfile_alpine = tmp_path / "Dockerfile.alpine"
+    dockerfile_alpine.write_text("FROM alpine:3.20\n")
 
     def fake_build(path: str, **_: Any) -> str:
         return f"inspect-sandboxes-{path.rsplit('/', 1)[-1]}"
@@ -264,11 +254,11 @@ async def test_sample_init_uses_sample_config_when_differs_from_task(
             side_effect=fake_build,
         ),
     ):
-        await E2BSandboxEnvironment.task_init("t", str(dockerfile_a))
-        await E2BSandboxEnvironment.sample_init("t", str(dockerfile_b), {})
+        await E2BSandboxEnvironment.task_init("t", str(dockerfile_python))
+        await E2BSandboxEnvironment.sample_init("t", str(dockerfile_alpine), {})
 
     create_kwargs = mock_cls.create.await_args.kwargs
-    assert create_kwargs["template"] == "inspect-sandboxes-B.Dockerfile"
+    assert create_kwargs["template"] == "inspect-sandboxes-Dockerfile.alpine"
 
 
 @pytest.mark.asyncio
@@ -281,7 +271,7 @@ async def test_sample_init_invalid_config(mock_sandbox: MagicMock) -> None:
             await E2BSandboxEnvironment.sample_init(
                 "test_task",
                 bad_config,
-                {"__sample_id__": "s"},
+                {},
             )
 
 
@@ -316,9 +306,7 @@ async def test_task_cleanup_skips_already_killed_in_orphan_pass(
     mock_cls = make_mock_async_sandbox_cls(mock_sandbox, list_items=(same,))
     with patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls):
         await E2BSandboxEnvironment.task_init("t", None)
-        envs = await E2BSandboxEnvironment.sample_init(
-            "t", None, {"__sample_id__": "s"}
-        )
+        envs = await E2BSandboxEnvironment.sample_init("t", None, {})
         assert envs
 
         await E2BSandboxEnvironment.task_cleanup("t", None, cleanup=True)

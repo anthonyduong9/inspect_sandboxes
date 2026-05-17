@@ -134,7 +134,7 @@ def test_image_only_uses_image_template_path() -> None:
 
 def test_build_resolves_dockerfile(tmp_path: Path) -> None:
     df = tmp_path / "Dockerfile"
-    df.write_text("FROM ubuntu:24.04\n")
+    df.write_text("FROM python:3.12\n")
     config = ComposeConfig(services={"default": ComposeService(build=".")})
     result = resolve_single_service_params(config, str(tmp_path / "compose.yaml"))
     assert result.dockerfile_path == str(df)

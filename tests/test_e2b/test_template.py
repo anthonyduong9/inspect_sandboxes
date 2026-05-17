@@ -18,11 +18,11 @@ from inspect_sandboxes.e2b._template import (
 def test_dockerfile_name_is_content_derived(tmp_path: Any) -> None:
     """Identical content + resources → identical name; differing content → different."""
     df1 = tmp_path / "Dockerfile1"
-    df1.write_text("FROM ubuntu:24.04\n")
+    df1.write_text("FROM python:3.12\n")
     df2 = tmp_path / "Dockerfile2"
-    df2.write_text("FROM ubuntu:24.04\n")  # same content
+    df2.write_text("FROM python:3.12\n")  # same content
     df3 = tmp_path / "Dockerfile3"
-    df3.write_text("FROM ubuntu:22.04\n")  # different content
+    df3.write_text("FROM python:3.11\n")  # different content
 
     n1 = template_name_for_dockerfile(str(df1))
     n2 = template_name_for_dockerfile(str(df2))
@@ -38,7 +38,7 @@ def test_dockerfile_name_is_content_derived(tmp_path: Any) -> None:
 def test_dockerfile_name_includes_resources(tmp_path: Any) -> None:
     """Different cpu_count or memory_mb → different name."""
     df = tmp_path / "Dockerfile"
-    df.write_text("FROM ubuntu:24.04\n")
+    df.write_text("FROM python:3.12\n")
 
     base = template_name_for_dockerfile(str(df), cpu_count=2, memory_mb=1024)
     diff_cpu = template_name_for_dockerfile(str(df), cpu_count=4, memory_mb=1024)
@@ -61,7 +61,7 @@ def test_image_name_is_image_derived() -> None:
 @pytest.mark.asyncio
 async def test_dockerfile_build_short_circuits_when_cached(tmp_path: Any) -> None:
     df = tmp_path / "Dockerfile"
-    df.write_text("FROM ubuntu:24.04\n")
+    df.write_text("FROM python:3.12\n")
 
     with patch("inspect_sandboxes.e2b._template.AsyncTemplate") as mock_cls:
         mock_cls.exists = AsyncMock(return_value=True)
@@ -77,7 +77,7 @@ async def test_dockerfile_build_short_circuits_when_cached(tmp_path: Any) -> Non
 @pytest.mark.asyncio
 async def test_dockerfile_build_runs_when_not_cached(tmp_path: Any) -> None:
     df = tmp_path / "Dockerfile"
-    df.write_text("FROM ubuntu:24.04\nRUN echo hi\n")
+    df.write_text("FROM python:3.12\nRUN echo hi\n")
 
     with patch("inspect_sandboxes.e2b._template.AsyncTemplate") as mock_cls:
         mock_cls.exists = AsyncMock(return_value=False)
