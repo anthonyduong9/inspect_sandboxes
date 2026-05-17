@@ -50,17 +50,11 @@ _DEFAULT_SANDBOX_TIMEOUT = 3600
 
 _running_sandboxes: ContextVar[list[str]] = ContextVar("e2b_running_sandboxes")
 _run_id: ContextVar[str] = ContextVar("e2b_run_id")
-_template_name: ContextVar[str | None] = ContextVar("e2b_template_name", default=None)
-_compose_params: ContextVar[E2BSingleServiceParams | None] = ContextVar(
-    "e2b_compose_params", default=None
-)
 
 
 def _init_context() -> None:
     _running_sandboxes.set([])
     _run_id.set(uuid.uuid4().hex)
-    _template_name.set(None)
-    _compose_params.set(None)
 
 
 def _run_metadata(task_name: str | None = None) -> dict[str, str]:
@@ -100,13 +94,12 @@ class E2BSandboxEnvironment(SandboxEnvironment):
         config: SandboxEnvironmentConfigType | None,
     ) -> None:
         _init_context()
-
-        # Build the template once per task so all samples share the cached image.
+        # Warm the template cache; sample_init re-resolves from each sample's
+        # own config (which may differ from the task's).
         if config is None:
             return
         if is_dockerfile(config):
-            name = await build_template_for_dockerfile(str(config))
-            _template_name.set(name)
+            await build_template_for_dockerfile(str(config))
             return
         if is_compose_yaml(config) or isinstance(config, ComposeConfig):
             if isinstance(config, ComposeConfig):
@@ -115,30 +108,23 @@ class E2BSandboxEnvironment(SandboxEnvironment):
                 compose_config = parse_compose_yaml(config, multiple_services=True)
                 compose_path = config
             if len(compose_config.services) > 1:
-                # DinD template is built lazily inside sample_init_dind. Stash
-                # the parsed config so sample_init can route to the DinD path.
+                # DinD template is built lazily inside sample_init_dind.
                 return
             params = resolve_single_service_params(compose_config, compose_path)
-            _compose_params.set(params)
             if params.template is not None:
-                _template_name.set(params.template)
-            elif params.dockerfile_path is not None:
-                _template_name.set(
-                    await build_template_for_dockerfile(
-                        params.dockerfile_path,
-                        cpu_count=params.cpu_count,
-                        memory_mb=params.memory_mb,
-                    )
+                return
+            if params.dockerfile_path is not None:
+                await build_template_for_dockerfile(
+                    params.dockerfile_path,
+                    cpu_count=params.cpu_count,
+                    memory_mb=params.memory_mb,
                 )
             elif params.image is not None:
-                _template_name.set(
-                    await build_template_for_image(
-                        params.image,
-                        cpu_count=params.cpu_count,
-                        memory_mb=params.memory_mb,
-                    )
+                await build_template_for_image(
+                    params.image,
+                    cpu_count=params.cpu_count,
+                    memory_mb=params.memory_mb,
                 )
-            return
 
     @override
     @classmethod
@@ -148,20 +134,14 @@ class E2BSandboxEnvironment(SandboxEnvironment):
         config: SandboxEnvironmentConfigType | None,
         metadata: dict[str, str],
     ) -> dict[str, SandboxEnvironment]:
-        template: str | None
-        envs: dict[str, str] | None = None
-        sandbox_timeout: float | int = _DEFAULT_SANDBOX_TIMEOUT
-        extra_metadata: dict[str, str] = {}
+        template: str | None = None
+        params: E2BSingleServiceParams | None = None
+        compose_config: ComposeConfig | None = None
 
         if config is None:
             template = None
         elif is_dockerfile(config):
-            template = _template_name.get()
-            if template is None:
-                raise RuntimeError(
-                    "Dockerfile template was not built in task_init. "
-                    "task_init must be called before sample_init."
-                )
+            template = await build_template_for_dockerfile(str(config))
         elif is_compose_yaml(config) or isinstance(config, ComposeConfig):
             if isinstance(config, ComposeConfig):
                 compose_config, compose_path = config, None
@@ -172,28 +152,40 @@ class E2BSandboxEnvironment(SandboxEnvironment):
                 return await cls._dind_sample_init(
                     task_name, compose_config, compose_path, metadata
                 )
-            template = _template_name.get()
-            if template is None:
-                raise RuntimeError(
-                    "Compose template was not built in task_init. "
-                    "task_init must be called before sample_init."
+            params = resolve_single_service_params(compose_config, compose_path)
+            if params.template is not None:
+                template = params.template
+            elif params.dockerfile_path is not None:
+                template = await build_template_for_dockerfile(
+                    params.dockerfile_path,
+                    cpu_count=params.cpu_count,
+                    memory_mb=params.memory_mb,
                 )
-            params = _compose_params.get()
-            if params is not None:
-                envs = params.envs or None
-                if params.timeout is not None:
-                    sandbox_timeout = params.timeout
-                else:
-                    timeout_override = extract_e2b_timeout(compose_config.extensions)
-                    if timeout_override is not None:
-                        sandbox_timeout = timeout_override
-                extra_metadata = dict(params.metadata)
+            elif params.image is not None:
+                template = await build_template_for_image(
+                    params.image,
+                    cpu_count=params.cpu_count,
+                    memory_mb=params.memory_mb,
+                )
         else:
             raise ValueError(
                 f"Unrecognized config: {config}. "
                 "Expected a compose file (*.yaml/*.yml), Dockerfile, "
                 "ComposeConfig object, or None."
             )
+
+        envs: dict[str, str] | None = None
+        sandbox_timeout: float | int = _DEFAULT_SANDBOX_TIMEOUT
+        extra_metadata: dict[str, str] = {}
+        if params is not None:
+            envs = params.envs or None
+            if params.timeout is not None:
+                sandbox_timeout = params.timeout
+            elif compose_config is not None:
+                timeout_override = extract_e2b_timeout(compose_config.extensions)
+                if timeout_override is not None:
+                    sandbox_timeout = timeout_override
+            extra_metadata = dict(params.metadata)
 
         run_metadata = {
             **extra_metadata,

@@ -220,6 +220,58 @@ async def test_sample_init_multi_service_routes_to_dind(
 
 
 @pytest.mark.asyncio
+async def test_sample_init_resolves_sample_override_when_task_config_none(
+    mock_sandbox: MagicMock,
+    tmp_path: Any,
+) -> None:
+    """sample_init resolves the template from the sample's config even when task_init saw None."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM ubuntu:24.04\n")
+    mock_cls = make_mock_async_sandbox_cls(mock_sandbox)
+    with (
+        patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls),
+        patch("inspect_sandboxes.e2b._e2b.build_template_for_dockerfile") as build,
+    ):
+        build.return_value = "inspect-sandboxes-sample-only"
+
+        await E2BSandboxEnvironment.task_init("test_task", None)
+        envs = await E2BSandboxEnvironment.sample_init("test_task", str(dockerfile), {})
+
+        assert "default" in envs
+        create_kwargs = mock_cls.create.await_args.kwargs
+        assert create_kwargs["template"] == "inspect-sandboxes-sample-only"
+
+
+@pytest.mark.asyncio
+async def test_sample_init_uses_sample_config_when_differs_from_task(
+    mock_sandbox: MagicMock,
+    tmp_path: Any,
+) -> None:
+    """sample_init uses the sample's Dockerfile even when task_init saw a different one."""
+    dockerfile_a = tmp_path / "A.Dockerfile"
+    dockerfile_a.write_text("FROM ubuntu:24.04\n")
+    dockerfile_b = tmp_path / "B.Dockerfile"
+    dockerfile_b.write_text("FROM debian:12\n")
+
+    def fake_build(path: str, **_: Any) -> str:
+        return f"inspect-sandboxes-{path.rsplit('/', 1)[-1]}"
+
+    mock_cls = make_mock_async_sandbox_cls(mock_sandbox)
+    with (
+        patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls),
+        patch(
+            "inspect_sandboxes.e2b._e2b.build_template_for_dockerfile",
+            side_effect=fake_build,
+        ),
+    ):
+        await E2BSandboxEnvironment.task_init("t", str(dockerfile_a))
+        await E2BSandboxEnvironment.sample_init("t", str(dockerfile_b), {})
+
+    create_kwargs = mock_cls.create.await_args.kwargs
+    assert create_kwargs["template"] == "inspect-sandboxes-B.Dockerfile"
+
+
+@pytest.mark.asyncio
 async def test_sample_init_invalid_config(mock_sandbox: MagicMock) -> None:
     mock_cls = make_mock_async_sandbox_cls(mock_sandbox)
     with patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls):
