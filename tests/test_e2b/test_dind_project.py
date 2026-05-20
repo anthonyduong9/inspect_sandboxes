@@ -198,21 +198,8 @@ def test_dind_template_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_dind_template_short_circuits() -> None:
+async def test_ensure_dind_template_invokes_sdk() -> None:
     with patch("inspect_sandboxes.e2b._dind_project.AsyncTemplate") as mock_cls:
-        mock_cls.exists = AsyncMock(return_value=True)
-        mock_cls.build = AsyncMock()
-
-        name = await _ensure_dind_template(cpu_count=2, memory_mb=4096)
-        assert name == _dind_template_name(cpu_count=2, memory_mb=4096)
-        mock_cls.exists.assert_awaited_once_with(name)
-        mock_cls.build.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_ensure_dind_template_builds_when_missing() -> None:
-    with patch("inspect_sandboxes.e2b._dind_project.AsyncTemplate") as mock_cls:
-        mock_cls.exists = AsyncMock(return_value=False)
         mock_cls.build = AsyncMock()
         instance = MagicMock()
         # Chain: AsyncTemplate().from_ubuntu_image().apt_install()...
@@ -222,7 +209,8 @@ async def test_ensure_dind_template_builds_when_missing() -> None:
         instance.from_ubuntu_image = MagicMock(return_value=builder)
         mock_cls.return_value = instance
 
-        await _ensure_dind_template(cpu_count=2, memory_mb=4096)
+        name = await _ensure_dind_template(cpu_count=2, memory_mb=4096)
+        assert name == _dind_template_name(cpu_count=2, memory_mb=4096)
         mock_cls.build.assert_called_once()
 
 

@@ -8,11 +8,14 @@ and exec stay in each provider's ``_dind_project.py``.
 from __future__ import annotations
 
 from copy import deepcopy
+from logging import getLogger
 from pathlib import Path
 
 import yaml
 from inspect_ai.util import ComposeConfig, ComposeService
 from inspect_ai.util._sandbox.docker.service import parse_duration
+
+logger = getLogger(__name__)
 
 DEFAULT_SERVICE_TIMEOUT = 120
 
@@ -70,6 +73,11 @@ def discover_build_contexts(
         if not local_ctx.is_absolute():
             local_ctx = (compose_dir / local_ctx).resolve()
         if not local_ctx.exists():
+            logger.warning(
+                "Build context '%s' for service '%s' does not exist, skipping upload",
+                local_ctx,
+                svc_name,
+            )
             continue
         local_key = str(local_ctx)
         if local_key not in context_map:

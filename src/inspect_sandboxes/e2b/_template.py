@@ -2,11 +2,23 @@
 
 E2B templates must be pre-built before a sandbox can be created from them.
 This module computes a deterministic name from the build inputs (Dockerfile
-contents or base image, plus resource budget) and short-circuits the build
-when a template with that name already exists on the E2B side.
+contents or base image, plus resource budget) so identical inputs share the
+same cached template across users and runs.
 
-The cache key is global (no project prefix) so identical Dockerfiles share
-builds across users and runs.
+The Dockerfile path does *not* short-circuit via ``AsyncTemplate.exists(name)``:
+our hash captures only the Dockerfile text, not the contents of files pulled in
+by ``COPY``/``ADD``, so a stale cached template could outlive valid input
+changes. Instead we call ``AsyncTemplate.build()`` every time and rely on the
+SDK's per-instruction layer cache (see
+``e2b.template_async.main._build_internal``), which hashes COPY sources and
+reuses prior layers on a match — unchanged builds remain fast.
+
+The image path *does* short-circuit via ``exists()``: there are no COPY/ADD
+sources to invalidate against, so the only thing the build call would do on a
+cache hit is round-trip the API.
+
+The cache key is global (no project prefix) so identical inputs share builds
+across users and runs.
 """
 
 from __future__ import annotations
@@ -75,18 +87,10 @@ async def build_template_for_dockerfile(
     cpu_count: int = DEFAULT_CPU_COUNT,
     memory_mb: int = DEFAULT_MEMORY_MB,
 ) -> str:
-    """Build (or reuse cached) E2B template from a Dockerfile.
-
-    Returns the template name. The spike showed AsyncTemplate.build() does not
-    fast-path on cache hits server-side, so we always check exists() first.
-    """
+    """Build (or reuse cached) E2B template from a Dockerfile."""
     name = template_name_for_dockerfile(
         dockerfile_path, cpu_count=cpu_count, memory_mb=memory_mb
     )
-    if await AsyncTemplate.exists(name):
-        trace_message(logger, "e2b", f"Template {name} cached, reusing")
-        return name
-
     template = AsyncTemplate().from_dockerfile(dockerfile_path)
     trace_message(logger, "e2b", f"Building template {name} from {dockerfile_path}")
     await AsyncTemplate.build(

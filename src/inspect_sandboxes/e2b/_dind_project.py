@@ -10,9 +10,9 @@ Multi-service compose runs inside a Devbox that has Docker installed:
     5. Per-service environments (in ``_dind_env.py``) route exec/file ops via
        ``docker compose exec/cp``.
 
-We sidestep the daemon-start dance Daytona's DinD path needs because the
-``get.docker.com`` installer used by our DinD template configures dockerd to
-start at boot.
+The DinD template installs a pinned ``docker-ce`` from Docker's official apt
+repo; the post-install configures dockerd to start at boot, so we only need
+to wait for the daemon to come up — no explicit start step.
 """
 
 from __future__ import annotations
@@ -57,6 +57,8 @@ _SERVICE_TIMEOUT = 120
 
 DEFAULT_DIND_CPU = 2
 DEFAULT_DIND_MEMORY_MB = 4096  # docker daemon + at least one service comfortably
+
+DOCKER_CE_VERSION = "5:29.5.1-1~ubuntu.24.04~noble"
 
 
 @dataclass
@@ -254,26 +256,48 @@ def _dind_template_name(*, cpu_count: int, memory_mb: int) -> str:
 
 
 def build_dind_template_spec() -> TemplateClass:
-    """Build the AsyncTemplate definition for a Docker-capable Devbox."""
+    """Build the AsyncTemplate definition for a Docker-capable Devbox.
+
+    Installs a pinned ``docker-ce`` from Docker's official apt repo so cold
+    rebuilds produce byte-identical templates. Bump ``DOCKER_CE_VERSION`` to
+    pick up a new Docker release — the apt-install ``RUN`` text changes, so
+    E2B's per-instruction layer cache rebuilds that layer on next use.
+    """
+    docker_install = " && ".join(
+        [
+            "install -m 0755 -d /etc/apt/keyrings",
+            "curl -fsSL https://download.docker.com/linux/ubuntu/gpg "
+            "| gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+            "chmod a+r /etc/apt/keyrings/docker.gpg",
+            'echo "deb [arch=$(dpkg --print-architecture) '
+            "signed-by=/etc/apt/keyrings/docker.gpg] "
+            'https://download.docker.com/linux/ubuntu noble stable" '
+            "> /etc/apt/sources.list.d/docker.list",
+            "apt-get update",
+            "apt-get install -y --no-install-recommends "
+            f"docker-ce={DOCKER_CE_VERSION} "
+            f"docker-ce-cli={DOCKER_CE_VERSION} "
+            "containerd.io docker-buildx-plugin docker-compose-plugin",
+            "rm -rf /var/lib/apt/lists/*",
+        ]
+    )
     return (
         AsyncTemplate()
         .from_ubuntu_image("24.04")
-        .apt_install(["ca-certificates", "curl", "sudo"])
-        .run_cmd("curl -fsSL https://get.docker.com | sh")
-        .run_cmd("usermod -aG docker user || true")
+        .apt_install(["ca-certificates", "curl", "gnupg", "sudo"])
+        .run_cmd(docker_install)
     )
 
 
 async def _ensure_dind_template(
     *, cpu_count: int = DEFAULT_DIND_CPU, memory_mb: int = DEFAULT_DIND_MEMORY_MB
 ) -> str:
-    """Ensure a DinD template exists, building it if needed.
+    """Build (or reuse cached) DinD template; returns the template name.
 
-    Returns the template name.
+    Relies on E2B's per-instruction layer cache for unchanged builds (see
+    ``_template.py`` module docstring).
     """
     name = _dind_template_name(cpu_count=cpu_count, memory_mb=memory_mb)
-    if await AsyncTemplate.exists(name):
-        return name
     await AsyncTemplate.build(
         build_dind_template_spec(),
         name=name,

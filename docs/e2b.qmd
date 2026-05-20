@@ -162,6 +162,8 @@ Every sandbox created by `inspect_sandboxes` is named and labeled so you can loc
 
 User metadata from `x-e2b.metadata` is merged in; the four above always take precedence.
 
+**Template names** are content-hash derived and visible in the E2B dashboard alongside your sandboxes: `inspect-sandboxes-<12-char hash>` for single-service Dockerfile/image builds, `inspect-sandboxes-dind-<12-char hash>` for DinD. Identical inputs (Dockerfile or image + CPU + memory) produce the same name, so successive runs reuse the same named template slot; the build call itself is skipped or partially redone by E2B's per-instruction layer cache (e.g. an unchanged `COPY` reuses cached files, a changed one triggers a rebuild of that layer).
+
 **Bulk cleanup** via the Inspect CLI — finds and deletes every sandbox tagged `created_by: inspect-ai`:
 
 ```bash
@@ -179,6 +181,5 @@ inspect sandbox cleanup e2b <sandbox-id>    # delete one
 
 ## Limitations {#e2b-limitations}
 
-- **Build cache**: E2B's `AsyncTemplate.build()` does not fast-path on cache hits server-side. `inspect_sandboxes` calls `AsyncTemplate.exists()` first to skip the build entirely when a template with the matching name already exists.
 - **Per-sample resource overrides**: CPU and memory are baked into the template at build time; changing them produces a new cached template. Each unique resource profile maps to its own template.
 - **GPU**: E2B does not expose GPU allocation, so compose `deploy.resources.reservations.devices` is ignored.

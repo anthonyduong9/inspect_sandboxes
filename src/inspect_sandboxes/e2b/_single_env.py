@@ -6,7 +6,6 @@ import errno
 import shlex
 import uuid
 from logging import getLogger
-from pathlib import PurePosixPath
 from typing import Literal, overload
 
 from e2b import (
@@ -252,7 +251,3 @@ class E2BSingleServiceEnvironment(SandboxEnvironment):
             if "is a directory" in msg or "isdir" in msg:
                 raise IsADirectoryError(errno.EISDIR, "Is a directory", file) from e
             raise
-
-    @staticmethod
-    def _is_path_absolute(path: str) -> bool:
-        return PurePosixPath(path).is_absolute()

@@ -317,18 +317,39 @@ class E2BDinDServiceEnvironment(SandboxEnvironment):
         return exit_code == 0
 
     async def _get_file_size(self, path: str) -> int:
-        # Use wc -c for portability — stat -c %s is GNU/BusyBox-specific
+        """Return file size in bytes. Raises FileNotFoundError if missing."""
+        quoted = shlex.quote(path)
+        # stat -c %s works on GNU coreutils + busybox; -f %z is the BSD fallback.
         exit_code, stdout, _ = await compose_exec(
             self.project,
-            ["exec", "-T", self.service, "sh", "-c", f"wc -c < {shlex.quote(path)}"],
+            [
+                "exec",
+                "-T",
+                self.service,
+                "sh",
+                "-c",
+                f"stat -c %s {quoted} 2>/dev/null || stat -f %z {quoted} 2>/dev/null",
+            ],
             timeout=10,
         )
-        if exit_code != 0:
+        if exit_code == 0:
+            try:
+                return int(stdout.strip())
+            except ValueError as e:
+                raise RuntimeError(
+                    f"Failed to parse file size for {path}: {stdout!r}"
+                ) from e
+
+        test_exit, _, _ = await compose_exec(
+            self.project,
+            ["exec", "-T", self.service, "test", "-e", path],
+            timeout=10,
+        )
+        if test_exit != 0:
             raise FileNotFoundError(errno.ENOENT, "No such file or directory", path)
-        try:
-            return int(stdout.strip())
-        except ValueError as e:
-            raise RuntimeError(f"Failed to parse file size for {path}") from e
+        raise PermissionError(
+            errno.EACCES, "Cannot stat (likely permission denied)", path
+        )
 
     async def _verify_read_size(self, file: str) -> None:
         if await self._is_directory(file):

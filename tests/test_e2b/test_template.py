@@ -59,30 +59,12 @@ def test_image_name_is_image_derived() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dockerfile_build_short_circuits_when_cached(tmp_path: Any) -> None:
-    df = tmp_path / "Dockerfile"
-    df.write_text("FROM python:3.12\n")
-
-    with patch("inspect_sandboxes.e2b._template.AsyncTemplate") as mock_cls:
-        mock_cls.exists = AsyncMock(return_value=True)
-        mock_cls.build = AsyncMock()
-
-        name = await build_template_for_dockerfile(str(df))
-
-        assert name.startswith(TEMPLATE_NAME_PREFIX)
-        mock_cls.exists.assert_awaited_once_with(name)
-        mock_cls.build.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_dockerfile_build_runs_when_not_cached(tmp_path: Any) -> None:
+async def test_dockerfile_build_invokes_sdk(tmp_path: Any) -> None:
     df = tmp_path / "Dockerfile"
     df.write_text("FROM python:3.12\nRUN echo hi\n")
 
     with patch("inspect_sandboxes.e2b._template.AsyncTemplate") as mock_cls:
-        mock_cls.exists = AsyncMock(return_value=False)
         mock_cls.build = AsyncMock()
-        # Builder pattern: AsyncTemplate().from_dockerfile(...) -> TemplateBuilder
         builder = MagicMock()
         instance = MagicMock()
         instance.from_dockerfile = MagicMock(return_value=builder)
