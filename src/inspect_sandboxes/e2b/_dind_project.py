@@ -18,7 +18,6 @@ to wait for the daemon to come up — no explicit start step.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import shlex
@@ -244,15 +243,8 @@ async def _upload_build_contexts(
 
 
 def _dind_template_name(*, cpu_count: int, memory_mb: int) -> str:
-    """Derive a deterministic template name from DinD image and resources."""
-    h = hashlib.sha256(
-        json.dumps(
-            {"kind": "dind", "cpu_count": cpu_count, "memory_mb": memory_mb},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()[:12]
-    return f"{TEMPLATE_NAME_PREFIX}dind-{h}"
+    """Derive a deterministic template name from DinD resources."""
+    return f"{TEMPLATE_NAME_PREFIX}dind-{cpu_count}cpu-{memory_mb}mb"
 
 
 def build_dind_template_spec() -> TemplateClass:

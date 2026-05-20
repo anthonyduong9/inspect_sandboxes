@@ -33,7 +33,7 @@ from inspect_ai.util import trace_message
 
 logger = getLogger(__name__)
 
-TEMPLATE_NAME_PREFIX = "inspect-sandboxes-"
+TEMPLATE_NAME_PREFIX = "inspect-"
 DEFAULT_CPU_COUNT = 2
 DEFAULT_MEMORY_MB = 1024
 _HASH_LEN = 12

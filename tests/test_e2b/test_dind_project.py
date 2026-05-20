@@ -187,14 +187,12 @@ async def test_wait_for_services_times_out() -> None:
 
 
 def test_dind_template_name() -> None:
-    n1 = _dind_template_name(cpu_count=2, memory_mb=4096)
-    n2 = _dind_template_name(cpu_count=2, memory_mb=4096)
-    n3 = _dind_template_name(cpu_count=4, memory_mb=4096)
-    n4 = _dind_template_name(cpu_count=2, memory_mb=8192)
-    assert n1 == n2
-    assert n1 != n3
-    assert n1 != n4
-    assert n1.startswith("inspect-sandboxes-dind-")
+    assert (
+        _dind_template_name(cpu_count=2, memory_mb=4096) == "inspect-dind-2cpu-4096mb"
+    )
+    assert (
+        _dind_template_name(cpu_count=4, memory_mb=8192) == "inspect-dind-4cpu-8192mb"
+    )
 
 
 @pytest.mark.asyncio
@@ -225,7 +223,7 @@ async def test_create_dind_project_full_sequence() -> None:
         patch(
             "inspect_sandboxes.e2b._dind_project._ensure_dind_template",
             new_callable=AsyncMock,
-            return_value="inspect-sandboxes-dind-abc",
+            return_value="inspect-dind-abc",
         ),
         patch(
             "inspect_sandboxes.e2b._dind_project.AsyncSandbox.create",
@@ -269,7 +267,7 @@ async def test_create_dind_project_cleans_up_on_failure() -> None:
         patch(
             "inspect_sandboxes.e2b._dind_project._ensure_dind_template",
             new_callable=AsyncMock,
-            return_value="inspect-sandboxes-dind-abc",
+            return_value="inspect-dind-abc",
         ),
         patch(
             "inspect_sandboxes.e2b._dind_project.AsyncSandbox.create",

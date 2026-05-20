@@ -114,7 +114,7 @@ helper_env = sandbox("helper")
 
 **DinD image**: The DinD sandbox uses Ubuntu 24.04 with Docker engine + compose plugin installed via the official `get.docker.com` script.
 
-**DinD templates**: The provider auto-creates an E2B template for the DinD base image, named `inspect-sandboxes-dind-<12-char hash of cpu/memory>` and shared across runs.
+**DinD templates**: The provider auto-creates an E2B template for the DinD base image and shares it across runs.
 
 **Image caching**: Each DinD Devbox gets a fresh Docker daemon with no image cache. `docker compose build` rebuilds from scratch every sample. For faster startup, pre-build your images and push them to a registry, then use `image:` instead of `build:` in your compose file.
 
@@ -162,7 +162,7 @@ Every sandbox created by `inspect_sandboxes` is named and labeled so you can loc
 
 User metadata from `x-e2b.metadata` is merged in; the four above always take precedence.
 
-**Template names** are content-hash derived and visible in the E2B dashboard alongside your sandboxes: `inspect-sandboxes-<12-char hash>` for single-service Dockerfile/image builds, `inspect-sandboxes-dind-<12-char hash>` for DinD. Identical inputs (Dockerfile or image + CPU + memory) produce the same name, so successive runs reuse the same named template slot; the build call itself is skipped or partially redone by E2B's per-instruction layer cache (e.g. an unchanged `COPY` reuses cached files, a changed one triggers a rebuild of that layer).
+**Template names** appear in the E2B dashboard alongside your sandboxes: `inspect-<12-char hash>` for single-service Dockerfile/image builds (hashed because the input is unbounded), `inspect-dind-<cpu>cpu-<memory_mb>mb` for DinD (the resource profile is shown directly). Identical inputs produce the same name, so successive runs reuse the same named template slot; the build call itself is skipped or partially redone by E2B's per-instruction layer cache (e.g. an unchanged `COPY` reuses cached files, a changed one triggers a rebuild of that layer).
 
 **Bulk cleanup** via the Inspect CLI — finds and deletes every sandbox tagged `created_by: inspect-ai`:
 

@@ -97,7 +97,7 @@ async def test_dockerfile_config_builds_template_in_task_init(
         patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls),
         patch("inspect_sandboxes.e2b._e2b.build_template_for_dockerfile") as build,
     ):
-        build.return_value = "inspect-sandboxes-abc123"
+        build.return_value = "inspect-abc123"
 
         await E2BSandboxEnvironment.task_init("test_task", str(dockerfile))
         build.assert_awaited_once_with(str(dockerfile))
@@ -105,7 +105,7 @@ async def test_dockerfile_config_builds_template_in_task_init(
         envs = await E2BSandboxEnvironment.sample_init("test_task", str(dockerfile), {})
         assert "default" in envs
         create_kwargs = mock_cls.create.await_args.kwargs
-        assert create_kwargs["template"] == "inspect-sandboxes-abc123"
+        assert create_kwargs["template"] == "inspect-abc123"
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_single_service_compose_image_builds_template(
         patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls),
         patch("inspect_sandboxes.e2b._e2b.build_template_for_image") as build,
     ):
-        build.return_value = "inspect-sandboxes-image-hash"
+        build.return_value = "inspect-image-hash"
 
         await E2BSandboxEnvironment.task_init("test_task", str(compose))
         build.assert_awaited_once()
@@ -133,7 +133,7 @@ async def test_single_service_compose_image_builds_template(
 
         await E2BSandboxEnvironment.sample_init("test_task", str(compose), {})
         create_kwargs = mock_cls.create.await_args.kwargs
-        assert create_kwargs["template"] == "inspect-sandboxes-image-hash"
+        assert create_kwargs["template"] == "inspect-image-hash"
         assert create_kwargs["envs"] == {"FOO": "bar"}
         assert create_kwargs["timeout"] == 1234.0
 
@@ -222,14 +222,14 @@ async def test_sample_init_resolves_sample_override_when_task_config_none(
         patch("inspect_sandboxes.e2b._e2b.AsyncSandbox", new=mock_cls),
         patch("inspect_sandboxes.e2b._e2b.build_template_for_dockerfile") as build,
     ):
-        build.return_value = "inspect-sandboxes-sample-only"
+        build.return_value = "inspect-sample-only"
 
         await E2BSandboxEnvironment.task_init("test_task", None)
         envs = await E2BSandboxEnvironment.sample_init("test_task", str(dockerfile), {})
 
         assert "default" in envs
         create_kwargs = mock_cls.create.await_args.kwargs
-        assert create_kwargs["template"] == "inspect-sandboxes-sample-only"
+        assert create_kwargs["template"] == "inspect-sample-only"
 
 
 @pytest.mark.asyncio
@@ -244,7 +244,7 @@ async def test_sample_init_uses_sample_config_when_differs_from_task(
     dockerfile_alpine.write_text("FROM alpine:3.20\n")
 
     def fake_build(path: str, **_: Any) -> str:
-        return f"inspect-sandboxes-{path.rsplit('/', 1)[-1]}"
+        return f"inspect-{path.rsplit('/', 1)[-1]}"
 
     mock_cls = make_mock_async_sandbox_cls(mock_sandbox)
     with (
@@ -258,7 +258,7 @@ async def test_sample_init_uses_sample_config_when_differs_from_task(
         await E2BSandboxEnvironment.sample_init("t", str(dockerfile_alpine), {})
 
     create_kwargs = mock_cls.create.await_args.kwargs
-    assert create_kwargs["template"] == "inspect-sandboxes-Dockerfile.alpine"
+    assert create_kwargs["template"] == "inspect-Dockerfile.alpine"
 
 
 @pytest.mark.asyncio
