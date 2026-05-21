@@ -276,9 +276,13 @@ class E2BDinDServiceEnvironment(SandboxEnvironment):
             data = await self.project.sandbox.files.read(temp, format="bytes")
             data_bytes = bytes(data)
         finally:
+            # docker cp writes the temp as root, so the non-root user can't rm
+            # it directly (sticky-bit /tmp). Sudo to avoid leaking into /tmp.
             try:
                 await vm_exec(
-                    self.project.sandbox, f"rm -f {shlex.quote(temp)}", timeout=10
+                    self.project.sandbox,
+                    f"sudo rm -f {shlex.quote(temp)}",
+                    timeout=10,
                 )
             except Exception:
                 pass
