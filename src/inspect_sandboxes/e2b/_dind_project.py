@@ -57,7 +57,7 @@ _SERVICE_TIMEOUT = 120
 DEFAULT_DIND_CPU = 2
 DEFAULT_DIND_MEMORY_MB = 4096  # docker daemon + at least one service comfortably
 
-DOCKER_CE_VERSION = "5:29.5.1-1~ubuntu.24.04~noble"
+DOCKER_CE_VERSION = "5:29.5.2-1~ubuntu.24.04~noble"
 
 
 @dataclass
@@ -255,22 +255,24 @@ def build_dind_template_spec() -> TemplateClass:
     pick up a new Docker release — the apt-install ``RUN`` text changes, so
     E2B's per-instruction layer cache rebuilds that layer on next use.
     """
+    # E2B's run_cmd runs as an unprivileged user; sudo each step.
+    # `> file` redirects happen pre-sudo, so use `| sudo tee file` instead.
     docker_install = " && ".join(
         [
-            "install -m 0755 -d /etc/apt/keyrings",
+            "sudo install -m 0755 -d /etc/apt/keyrings",
             "curl -fsSL https://download.docker.com/linux/ubuntu/gpg "
-            "| gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
-            "chmod a+r /etc/apt/keyrings/docker.gpg",
+            "| sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+            "sudo chmod a+r /etc/apt/keyrings/docker.gpg",
             'echo "deb [arch=$(dpkg --print-architecture) '
             "signed-by=/etc/apt/keyrings/docker.gpg] "
             'https://download.docker.com/linux/ubuntu noble stable" '
-            "> /etc/apt/sources.list.d/docker.list",
-            "apt-get update",
-            "apt-get install -y --no-install-recommends "
+            "| sudo tee /etc/apt/sources.list.d/docker.list > /dev/null",
+            "sudo apt-get update",
+            "sudo apt-get install -y --no-install-recommends "
             f"docker-ce={DOCKER_CE_VERSION} "
             f"docker-ce-cli={DOCKER_CE_VERSION} "
             "containerd.io docker-buildx-plugin docker-compose-plugin",
-            "rm -rf /var/lib/apt/lists/*",
+            "sudo rm -rf /var/lib/apt/lists/*",
         ]
     )
     return (
