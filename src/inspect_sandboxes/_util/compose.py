@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from inspect_ai.util import ComposeBuild
+from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService
 
 
 def parse_environment(
@@ -62,3 +62,21 @@ def resolve_dockerfile_path(build: str | ComposeBuild, compose_dir: Path) -> Pat
         context = build.context or "."
         dockerfile = build.dockerfile or "Dockerfile"
         return compose_dir / context / dockerfile
+
+
+def find_default_service(config: ComposeConfig) -> tuple[str, ComposeService]:
+    """Find the default service in a compose config.
+
+    Priority: x-default: true -> service named "default" or "main" -> first service.
+
+    Returns:
+        Tuple of (service_name, service_config).
+    """
+    for name, svc in config.services.items():
+        if svc.x_default:
+            return name, svc
+    for candidate in ("default", "main"):
+        if candidate in config.services:
+            return candidate, config.services[candidate]
+    name = next(iter(config.services))
+    return name, config.services[name]

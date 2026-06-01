@@ -7,13 +7,11 @@ import json
 import os
 import shlex
 import uuid
-from copy import deepcopy
 from dataclasses import dataclass, field
 from logging import getLogger
 from pathlib import Path
 from typing import Any
 
-import yaml
 from daytona_sdk import (
     AsyncDaytona,
     AsyncSandbox,
@@ -25,8 +23,13 @@ from daytona_sdk import (
     Image,
     Resources,
 )
-from inspect_ai.util import ComposeConfig, ComposeService
-from inspect_ai.util._sandbox.docker.service import parse_duration
+from inspect_ai.util import ComposeConfig
+
+from inspect_sandboxes._util.dind_compose import (
+    compute_healthcheck_timeout,
+    discover_build_contexts,
+    rewrite_compose_yaml,
+)
 
 from ._retry import exec_retry, standard_retry
 from ._sandbox_utils import create_sandbox, delete_sandbox, sdk_upload
@@ -195,50 +198,14 @@ async def _upload_build_contexts(
 ) -> str:
     """Upload compose file and all build contexts to the sandbox.
 
-    If any service has a ``build.context`` that points to a local path
-    outside the compose file's parent directory, that context is uploaded
-    separately and the compose YAML is rewritten with the remote path.
-
-    Returns the remote path to the compose file.
+    Returns the remote path to the (possibly-rewritten) compose file.
     """
     compose_path = Path(compose_file)
     compose_dir = compose_path.parent
 
-    # Collect unique local build contexts that need uploading
-    # Map: local_abs_path -> remote_path
-    context_map: dict[str, str] = {}
-    needs_rewrite = False
-
-    for svc_name, service in config.services.items():
-        if not service.build:
-            continue
-
-        ctx = service.build if isinstance(service.build, str) else service.build.context
-        if not ctx:
-            continue
-
-        local_ctx = Path(ctx)
-        if not local_ctx.is_absolute():
-            local_ctx = (compose_dir / local_ctx).resolve()
-
-        if not local_ctx.exists():
-            logger.warning(
-                "Build context '%s' for service '%s' does not exist, skipping upload",
-                local_ctx,
-                svc_name,
-            )
-            continue
-
-        local_key = str(local_ctx)
-        if local_key not in context_map:
-            remote = f"{BUILD_CONTEXT_DIR}/{svc_name}"
-            context_map[local_key] = remote
-
-        # Check if this context is outside the compose dir
-        try:
-            local_ctx.relative_to(compose_dir)
-        except ValueError:
-            needs_rewrite = True
+    context_map, needs_rewrite = discover_build_contexts(
+        config, compose_dir, BUILD_CONTEXT_DIR
+    )
 
     # Upload the compose file's parent directory
     await _upload_directory(sandbox, compose_dir, COMPOSE_DIR)
@@ -250,59 +217,13 @@ async def _upload_build_contexts(
     if not needs_rewrite:
         return f"{COMPOSE_DIR}/{compose_path.name}"
 
-    # Rewrite compose YAML with remote context paths
-    config_copy = deepcopy(config)
-    for service in config_copy.services.values():
-        if not service.build:
-            continue
-
-        ctx = service.build if isinstance(service.build, str) else service.build.context
-        if not ctx:
-            continue
-
-        local_ctx = Path(ctx)
-        if not local_ctx.is_absolute():
-            local_ctx = (compose_dir / local_ctx).resolve()
-
-        local_key = str(local_ctx)
-        if local_key in context_map:
-            remote = context_map[local_key]
-            if isinstance(service.build, str):
-                service.build = remote
-            else:
-                service.build.context = remote
-
-    # Write rewritten compose YAML to sandbox
-    data = config_copy.model_dump(
-        by_alias=True, exclude_none=True, exclude_defaults=True
-    )
-    rewritten_yaml = yaml.dump(data, sort_keys=False)
+    rewritten_yaml = rewrite_compose_yaml(config, compose_dir, context_map)
     rewritten_remote = f"{COMPOSE_DIR}/compose.yaml"
 
     await sdk_upload(sandbox, rewritten_remote, rewritten_yaml.encode("utf-8"))
     logger.debug("Uploaded rewritten compose YAML to %s", rewritten_remote)
 
     return rewritten_remote
-
-
-def _compute_healthcheck_timeout(
-    services: dict[str, ComposeService],
-    default: int = _SERVICE_TIMEOUT,
-) -> int:
-    """Compute the maximum wait time from compose healthcheck configs."""
-    max_time = 0
-
-    for service in services.values():
-        hc = service.healthcheck
-        if hc is None:
-            continue
-        retries = hc.retries if hc.retries is not None else 3
-        interval = int(parse_duration(hc.interval).seconds) if hc.interval else 30
-        timeout = int(parse_duration(hc.timeout).seconds) if hc.timeout else 30
-        total_time = retries * (interval + timeout)
-        max_time = max(max_time, total_time)
-
-    return max_time if max_time > 0 else default
 
 
 def _dind_snapshot_name(resources: Resources | None) -> str:
@@ -448,7 +369,9 @@ async def create_dind_project(
             raise RuntimeError(f"docker compose build failed:\n{output}")
 
         # 7. Start services
-        healthcheck_timeout = _compute_healthcheck_timeout(config.services)
+        healthcheck_timeout = compute_healthcheck_timeout(
+            config.services, default=_SERVICE_TIMEOUT
+        )
         logger.debug("Starting compose services in DinD sandbox %s...", sandbox.id)
         exit_code, output = await compose_exec(
             project,

@@ -8,10 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from daytona_sdk import Resources
 from inspect_ai.util import ComposeConfig, ComposeService
-from inspect_ai.util._sandbox.compose import ComposeHealthcheck
 from inspect_sandboxes.daytona._dind_project import (
     DaytonaDinDProject,
-    _compute_healthcheck_timeout,
     _dind_snapshot_name,
     _wait_for_docker_daemon,
     _wait_for_services,
@@ -165,26 +163,6 @@ async def test_wait_for_services_times_out() -> None:
     ):
         with pytest.raises(RuntimeError, match="Not all services running"):
             await _wait_for_services(project, ["web", "helper"], timeout=2)
-
-
-def test_compute_healthcheck_timeout() -> None:
-    services = {
-        "web": ComposeService(
-            image="python:3.12",
-            healthcheck=ComposeHealthcheck(retries=3, interval="10s", timeout="5s"),
-        ),
-        "db": ComposeService(
-            image="postgres:16",
-            healthcheck=ComposeHealthcheck(retries=5, interval="5s", timeout="5s"),
-        ),
-    }
-    # web: 3 * (10 + 5) = 45, db: 5 * (5 + 5) = 50 -> max = 50
-    assert _compute_healthcheck_timeout(services) == 50
-
-
-def test_compute_healthcheck_timeout_no_healthchecks() -> None:
-    services = {"web": ComposeService(image="python:3.12")}
-    assert _compute_healthcheck_timeout(services) == 120
 
 
 def test_dind_snapshot_name() -> None:
