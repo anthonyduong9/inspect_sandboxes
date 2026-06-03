@@ -166,14 +166,20 @@ async def test_wait_for_services_times_out() -> None:
 
 
 def test_dind_snapshot_name() -> None:
+    # The trailing 12-char hex is sha256(DIND_IMAGE)[:12]; for the current
+    # DIND_IMAGE="docker:28.3.3-dind" this is "bb4ebfa28b94".
     assert (
-        _dind_snapshot_name(Resources(cpu=3, memory=7)) == "inspect-dind-3cpu-7gb-0gpu"
+        _dind_snapshot_name(Resources(cpu=3, memory=7))
+        == "inspect-dind-3cpu-7gb-0gpu-bb4ebfa28b94"
     )
     assert (
         _dind_snapshot_name(Resources(cpu=2, memory=4, gpu=1))
-        == "inspect-dind-2cpu-4gb-1gpu"
+        == "inspect-dind-2cpu-4gb-1gpu-bb4ebfa28b94"
     )
-    assert _dind_snapshot_name(None) == "inspect-dind-defaultcpu-defaultgb-0gpu"
+    assert (
+        _dind_snapshot_name(None)
+        == "inspect-dind-defaultcpu-defaultgb-0gpu-bb4ebfa28b94"
+    )
 
 
 @pytest.mark.asyncio
