@@ -36,6 +36,7 @@ from ._dind_project import (
     vm_exec,
 )
 from ._retry import run_with_timeout_retry
+from ._single_env import FILE_REQUEST_TIMEOUT
 
 logger = getLogger(__name__)
 
@@ -175,7 +176,9 @@ class E2BDinDServiceEnvironment(SandboxEnvironment):
             data = input.encode("utf-8") if isinstance(input, str) else input
             stdin_vm_file = f"/tmp/.inspect-stdin-{uuid.uuid4().hex}"
             stdin_container_file = f"/tmp/.inspect-stdin-{uuid.uuid4().hex}"
-            await self.project.sandbox.files.write(stdin_vm_file, data)
+            await self.project.sandbox.files.write(
+                stdin_vm_file, data, request_timeout=FILE_REQUEST_TIMEOUT
+            )
             cp_exit, _, cp_err = await compose_exec(
                 self.project,
                 ["cp", stdin_vm_file, f"{self.service}:{stdin_container_file}"],
@@ -227,7 +230,9 @@ class E2BDinDServiceEnvironment(SandboxEnvironment):
         data = contents.encode("utf-8") if isinstance(contents, str) else contents
         temp = f"/tmp/.inspect-write-{uuid.uuid4().hex}"
         try:
-            await self.project.sandbox.files.write(temp, data)
+            await self.project.sandbox.files.write(
+                temp, data, request_timeout=FILE_REQUEST_TIMEOUT
+            )
             exit_code, _, stderr = await compose_exec(
                 self.project,
                 ["cp", temp, f"{self.service}:{file}"],
@@ -273,7 +278,9 @@ class E2BDinDServiceEnvironment(SandboxEnvironment):
                 raise RuntimeError(
                     f"docker compose cp from {self.service}:{file} failed: {stderr}"
                 )
-            data = await self.project.sandbox.files.read(temp, format="bytes")
+            data = await self.project.sandbox.files.read(
+                temp, format="bytes", request_timeout=FILE_REQUEST_TIMEOUT
+            )
             data_bytes = bytes(data)
         finally:
             # docker cp writes the temp as root, so the non-root user can't rm

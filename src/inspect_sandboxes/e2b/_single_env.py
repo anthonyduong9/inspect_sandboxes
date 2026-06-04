@@ -30,6 +30,8 @@ from ._retry import exec_retry, run_with_timeout_retry, standard_retry
 
 logger = getLogger(__name__)
 
+FILE_REQUEST_TIMEOUT = 1800
+
 
 class E2BSingleServiceEnvironment(SandboxEnvironment):
     """Single-service sandbox using the E2B SDK directly."""
@@ -223,8 +225,13 @@ class E2BSingleServiceEnvironment(SandboxEnvironment):
 
     @standard_retry
     async def _read_file_text(self, file: str) -> str:
+        # Override the SDK's 60s default — too tight for large files
+        # (e.g. multi-GB datasets passed via Sample.files). 30 min matches
+        # the Daytona SDK's default for the same operation.
         try:
-            return await self.sandbox.files.read(file, format="text", user="root")
+            return await self.sandbox.files.read(
+                file, format="text", user="root", request_timeout=FILE_REQUEST_TIMEOUT
+            )
         except (FileNotFoundException, NotFoundException) as e:
             raise FileNotFoundError(
                 errno.ENOENT, "No such file or directory", file
@@ -233,7 +240,9 @@ class E2BSingleServiceEnvironment(SandboxEnvironment):
     @standard_retry
     async def _read_file_bytes(self, file: str) -> bytes:
         try:
-            data = await self.sandbox.files.read(file, format="bytes", user="root")
+            data = await self.sandbox.files.read(
+                file, format="bytes", user="root", request_timeout=FILE_REQUEST_TIMEOUT
+            )
             return bytes(data)
         except (FileNotFoundException, NotFoundException) as e:
             raise FileNotFoundError(
@@ -245,7 +254,9 @@ class E2BSingleServiceEnvironment(SandboxEnvironment):
         # E2B's files.write auto-creates parent directories. We don't need
         # the explicit mkdir step that Modal/Daytona do.
         try:
-            await self.sandbox.files.write(file, data, user="root")
+            await self.sandbox.files.write(
+                file, data, user="root", request_timeout=FILE_REQUEST_TIMEOUT
+            )
         except SandboxException as e:
             msg = str(e).lower()
             if "is a directory" in msg or "isdir" in msg:

@@ -230,7 +230,7 @@ async def test_write_file_text(mock_sandbox: MagicMock) -> None:
     await env.write_file("/workspace/test.txt", "hello")
 
     mock_sandbox.files.write.assert_called_once_with(
-        "/workspace/test.txt", b"hello", user="root"
+        "/workspace/test.txt", b"hello", user="root", request_timeout=1800
     )
 
 
@@ -243,7 +243,7 @@ async def test_write_file_binary(mock_sandbox: MagicMock) -> None:
     await env.write_file("/workspace/data.bin", b"\x00\x01\x02")
 
     mock_sandbox.files.write.assert_called_once_with(
-        "/workspace/data.bin", b"\x00\x01\x02", user="root"
+        "/workspace/data.bin", b"\x00\x01\x02", user="root", request_timeout=1800
     )
 
 
