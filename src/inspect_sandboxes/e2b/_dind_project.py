@@ -41,6 +41,7 @@ from inspect_sandboxes._util.dind_compose import (
     rewrite_compose_yaml,
 )
 
+from ._single_env import FILE_REQUEST_TIMEOUT
 from ._template import TEMPLATE_NAME_PREFIX
 
 logger = getLogger(__name__)
@@ -208,7 +209,7 @@ async def _upload_directory(
     distinct_dirs = sorted({str(Path(e["path"]).parent) for e in entries})
     for d in distinct_dirs:
         await sandbox.files.make_dir(d)
-    await sandbox.files.write_files(entries)
+    await sandbox.files.write_files(entries, request_timeout=FILE_REQUEST_TIMEOUT)
     logger.debug("Uploaded %d files from %s to %s", len(entries), local_dir, remote_dir)
 
 
@@ -237,7 +238,11 @@ async def _upload_build_contexts(
 
     rewritten = rewrite_compose_yaml(config, compose_dir, context_map)
     rewritten_remote = f"{COMPOSE_DIR}/compose.yaml"
-    await sandbox.files.write(rewritten_remote, rewritten.encode("utf-8"))
+    await sandbox.files.write(
+        rewritten_remote,
+        rewritten.encode("utf-8"),
+        request_timeout=FILE_REQUEST_TIMEOUT,
+    )
     logger.debug("Uploaded rewritten compose YAML to %s", rewritten_remote)
     return rewritten_remote
 
