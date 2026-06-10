@@ -276,13 +276,32 @@ class E2BSandboxEnvironment(SandboxEnvironment):
             return
         any_env = next(iter(environments.values()))
         if isinstance(any_env, E2BDinDServiceEnvironment):
+            sandbox_ids = [
+                any_env.as_type(E2BDinDServiceEnvironment).project.sandbox.sandbox_id
+            ]
             await E2BDinDServiceEnvironment.sample_cleanup(
                 task_name, config, environments, interrupted
             )
         else:
+            sandbox_ids = [
+                env.as_type(E2BSingleServiceEnvironment).sandbox.sandbox_id
+                for env in environments.values()
+            ]
             await E2BSingleServiceEnvironment.sample_cleanup(
                 task_name, config, environments, interrupted
             )
+
+        # Skip the redundant DELETE in task_cleanup's first pass (the E2B SDK
+        # logs it as ERROR Response 404). Anything we failed to kill here is
+        # still caught by the orphan-recovery pass via inspect_run_id metadata.
+        if interrupted:
+            return
+        running = _running_sandboxes.get()
+        for sandbox_id in sandbox_ids:
+            try:
+                running.remove(sandbox_id)
+            except ValueError:
+                pass
 
     @override
     @classmethod

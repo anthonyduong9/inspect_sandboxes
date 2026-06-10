@@ -67,10 +67,11 @@ async def test_full_lifecycle(mock_sandbox: MagicMock) -> None:
 
         await E2BSandboxEnvironment.sample_cleanup("test_task", None, envs, False)
         mock_sandbox.kill.assert_awaited_once()
+        assert _running_sandboxes.get() == []
 
         await E2BSandboxEnvironment.task_cleanup("test_task", None, cleanup=True)
-        # Tracked sandbox is killed via AsyncSandbox.kill(sandbox_id).
-        mock_cls.kill.assert_any_await("sb-test-123")
+        # Both passes: pass-1 has nothing tracked, pass-2 paginator returns no items.
+        mock_cls.kill.assert_not_awaited()
         assert _running_sandboxes.get() == []
 
 
