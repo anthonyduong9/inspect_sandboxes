@@ -44,6 +44,9 @@ from ._sandbox_utils import (
     create_sandbox,
     delete_sandbox,
     list_sandboxes,
+    reap_zombie_sandboxes,
+    reset_zombie_registry,
+    zombie_registry,
 )
 from ._single_env import DaytonaSingleServiceEnvironment
 
@@ -60,6 +63,7 @@ _run_id: ContextVar[str] = ContextVar("daytona_run_id")
 
 def _init_context() -> None:
     _running_sandboxes.set([])
+    reset_zombie_registry()
     _run_id.set(uuid.uuid4().hex)
 
 
@@ -248,6 +252,8 @@ class DaytonaSandboxEnvironment(SandboxEnvironment):
                 for sb in orphans:
                     if sb.id in deleted_ids:
                         continue
+                    if sb.name in zombie_registry():
+                        continue  # left for the best-effort reaper below
                     try:
                         await delete_sandbox(client, sb)
                         trace_message(
@@ -266,6 +272,19 @@ class DaytonaSandboxEnvironment(SandboxEnvironment):
                 f"Failed to cleanup {len(failed_ids)} sandbox(es). "
                 f"Failed IDs: {', '.join(failed_ids)}"
             )
+
+        # Third pass: zombies from failed create attempts. These are often
+        # still transitioning (undeletable) when the passes above run, so
+        # reap them best-effort. Guard the whole block so an unexpected error
+        # can't skip the client teardown below (as the passes above do).
+        zombies = zombie_registry()
+        if zombies:
+            try:
+                await reap_zombie_sandboxes(client, zombies)
+            except Exception as e:
+                logger.warning(f"Failed to reap zombie sandboxes: {e}")
+            finally:
+                zombies.clear()
 
         _running_sandboxes.get().clear()
 
