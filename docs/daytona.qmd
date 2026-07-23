@@ -141,7 +141,7 @@ The top-level `x-daytona` key on a compose file passes settings to the Daytona s
 | `ephemeral` | bool | `False` | If `True`, the sandbox is auto-deleted when stopped. |
 | `timeout` | float (seconds) | `60` | Seconds to wait for the sandbox creation API call to complete. For DinD, this covers only the VM provisioning — dockerd boot, image pulls, and `docker compose build`/`up` have their own internal timeouts and are not affected. |
 | `snapshot` | str | `None` | Pre-created Daytona snapshot name. Skips image build for single-service; used as the DinD VM snapshot for multi-service. |
-| `resources` | dict | per-service aggregation | Sandbox-level resource overrides (`cpu`, `memory`, `gpu`). For DinD, overrides the per-service sum. |
+| `resources` | dict | per-service aggregation | Sandbox-level resource overrides (`cpu`, `memory`, `gpu`, `disk` in GiB). `disk` can only be set here. For DinD, overrides the per-service sum. |
 | `env_vars` | dict | `{}` | Extra env vars. Single-service: merged with service `environment` (x-daytona wins). DinD: set on the VM, not on compose services. |
 | `labels` | dict | `{}` | Custom labels, merged with `inspect_sandboxes`' own labels (which take precedence). |
 :::
@@ -155,6 +155,7 @@ x-daytona:
     cpu: 4
     memory: 8
     gpu: 1
+    disk: 20
   env_vars:
     EXTRA_VAR: "value"
 ```
@@ -174,7 +175,7 @@ Every sandbox created by `inspect_sandboxes` is named and labeled so you can loc
 
 User labels from `x-daytona.labels` are merged in; the two above always take precedence.
 
-**DinD snapshot names** are deterministic, derived from aggregated per-service resources and the DinD image: `inspect-dind-<cpu>cpu-<mem>gb-<gpu>gpu-<image-hash>` (e.g. `inspect-dind-2cpu-4gb-0gpu-bb4ebfa28b94`). The trailing 12-char hex is a hash of `DIND_IMAGE`, so bumping the image invalidates the cache and a fresh snapshot is built. Samples with matching resource profiles and image reuse the same snapshot.
+**DinD snapshot names** are deterministic, derived from aggregated per-service resources and the DinD image: `inspect-dind-<cpu>cpu-<mem>gb-<gpu>gpu-<disk>disk-<image-hash>` (e.g. `inspect-dind-2cpu-4gb-0gpu-20disk-bb4ebfa28b94`). The trailing 12-char hex is a hash of `DIND_IMAGE`, so bumping the image invalidates the cache and a fresh snapshot is built. Samples with matching resource profiles and image reuse the same snapshot.
 
 **Bulk cleanup** via the Inspect CLI — finds and deletes every sandbox tagged `created_by: inspect-ai`:
 
