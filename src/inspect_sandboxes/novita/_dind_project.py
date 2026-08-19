@@ -26,6 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from logging import getLogger
 from pathlib import Path
+from typing import Any
 
 import httpx
 from inspect_ai.util import ComposeConfig
@@ -33,7 +34,6 @@ from novita_sandbox.core import (
     AsyncSandbox,
     AsyncTemplate,
     CommandExitException,
-    NotFoundException,
     TemplateClass,
     TimeoutException,
 )
@@ -210,8 +210,6 @@ async def _upload_directory(
     """Upload a local directory to the sandbox recursively."""
     local_dir = Path(local_dir)
     # files.write_files's WriteEntry is a TypedDict; the SDK accepts plain dicts.
-    from typing import Any
-
     entries: list[Any] = []
 
     for root, _, files in os.walk(local_dir):
@@ -421,7 +419,7 @@ async def create_dind_project(
     except BaseException:
         try:
             await sandbox.kill()
-        except (NotFoundException, Exception) as e:
+        except Exception as e:
             logger.warning(
                 "Failed to clean up DinD sandbox %s: %s", sandbox.sandbox_id, e
             )
