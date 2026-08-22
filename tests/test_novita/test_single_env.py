@@ -227,6 +227,34 @@ async def test_exec_retries_transient_error(mock_sandbox: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_exec_retries_transport_error(mock_sandbox: MagicMock) -> None:
+    """A dropped connection (httpx.ReadError) leaks from the SDK; must be retried."""
+    mock_sandbox.commands.run = AsyncMock(
+        side_effect=[
+            httpx.ReadError("reset"),
+            _make_command_result(stdout="ok", exit_code=0),
+        ]
+    )
+    env = NovitaSingleServiceEnvironment(mock_sandbox)
+    result = await env.exec(["echo", "test"])
+
+    assert result.success
+    assert mock_sandbox.commands.run.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_exec_does_not_retry_non_novita_error(mock_sandbox: MagicMock) -> None:
+    """Test that non-SandboxException, non-transport exceptions are not retried."""
+    mock_sandbox.commands.run = AsyncMock(side_effect=RuntimeError("unexpected"))
+    env = NovitaSingleServiceEnvironment(mock_sandbox)
+
+    with pytest.raises(RuntimeError, match="unexpected"):
+        await env.exec(["echo", "test"])
+
+    assert mock_sandbox.commands.run.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_exec_timeout_retry_uses_capped_timeouts(
     mock_sandbox: MagicMock,
 ) -> None:
@@ -315,6 +343,19 @@ async def test_write_file_retries_transport_error(mock_sandbox: MagicMock) -> No
 
 
 @pytest.mark.asyncio
+async def test_write_file_does_not_retry_timeout(mock_sandbox: MagicMock) -> None:
+    """Timeout exceptions (httpx.ReadTimeout) are excluded from retry."""
+    mock_sandbox.files.get_info = AsyncMock(side_effect=NotFoundException("missing"))
+    mock_sandbox.files.write = AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
+    env = NovitaSingleServiceEnvironment(mock_sandbox)
+
+    with pytest.raises(httpx.ReadTimeout):
+        await env.write_file("/workspace/test.txt", "hello")
+
+    assert mock_sandbox.files.write.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_write_file_raises_for_directory(mock_sandbox: MagicMock) -> None:
     """Test write_file raises IsADirectoryError when path is a directory."""
     env = NovitaSingleServiceEnvironment(mock_sandbox)
@@ -361,6 +402,24 @@ async def test_read_file_binary(mock_sandbox: MagicMock) -> None:
 
     result = await env.read_file("/test.bin", text=False)
     assert result == b"\x00\x01\x02\x03"
+
+
+@pytest.mark.asyncio
+async def test_read_file_retries_transport_error(mock_sandbox: MagicMock) -> None:
+    """A dropped connection (httpx.ReadError) during read must be retried."""
+    env = NovitaSingleServiceEnvironment(mock_sandbox)
+    file_info = MagicMock()
+    file_info.type = FileType.FILE
+    file_info.size = 12
+    mock_sandbox.files.get_info = AsyncMock(return_value=file_info)
+    mock_sandbox.files.read = AsyncMock(
+        side_effect=[httpx.ReadError("reset"), "hello world\n"]
+    )
+
+    result = await env.read_file("/test.txt", text=True)
+
+    assert result == "hello world\n"
+    assert mock_sandbox.files.read.await_count == 2
 
 
 @pytest.mark.asyncio

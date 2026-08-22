@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from inspect_ai.util import ComposeConfig, ComposeService
 from inspect_sandboxes.novita._dind_project import (
     NovitaDinDProject,
     _dind_template_name,
     _ensure_dind_template,
+    _upload_build_contexts,
     _wait_for_docker_daemon,
     _wait_for_services,
     compose_exec,
@@ -350,3 +352,28 @@ async def test_destroy_dind_project_swallows_errors() -> None:
     ):
         # Should not raise.
         await destroy_dind_project(project)
+
+
+@pytest.mark.asyncio
+async def test_upload_build_contexts_retries_transport_error() -> None:
+    """_upload_build_contexts uses write_sandbox_file and retries on ReadError."""
+    config = ComposeConfig(services={"web": ComposeService(image="python:3.12")})
+    sandbox = make_mock_sandbox()
+    sandbox.files.write = AsyncMock(side_effect=[httpx.ReadError("reset"), None])
+
+    with (
+        patch(
+            "inspect_sandboxes.novita._dind_project._upload_directory",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "inspect_sandboxes.novita._dind_project.discover_build_contexts",
+            return_value=({"/elsewhere/web": "/inspect/contexts/web"}, True),
+        ),
+    ):
+        remote_path = await _upload_build_contexts(
+            sandbox, config, "/local/project/compose.yaml"
+        )
+
+    assert remote_path == "/inspect/compose/compose.yaml"
+    assert sandbox.files.write.await_count == 2
