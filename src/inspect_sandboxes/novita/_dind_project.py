@@ -44,7 +44,8 @@ from inspect_sandboxes._util.dind_compose import (
     rewrite_compose_yaml,
 )
 
-from ._single_env import FILE_REQUEST_TIMEOUT
+from ._retry import standard_retry
+from ._single_env import FILE_REQUEST_TIMEOUT, write_sandbox_file
 from ._template import TEMPLATE_NAME_PREFIX
 
 logger = getLogger(__name__)
@@ -202,6 +203,7 @@ async def _wait_for_services(
     )
 
 
+@standard_retry
 async def _upload_directory(
     sandbox: AsyncSandbox,
     local_dir: str | Path,
@@ -259,11 +261,7 @@ async def _upload_build_contexts(
 
     rewritten = rewrite_compose_yaml(config, compose_dir, context_map)
     rewritten_remote = f"{COMPOSE_DIR}/compose.yaml"
-    await sandbox.files.write(
-        rewritten_remote,
-        rewritten.encode("utf-8"),
-        request_timeout=FILE_REQUEST_TIMEOUT,
-    )
+    await write_sandbox_file(sandbox, rewritten_remote, rewritten.encode("utf-8"))
     logger.debug("Uploaded rewritten compose YAML to %s", rewritten_remote)
     return rewritten_remote
 
