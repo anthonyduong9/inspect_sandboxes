@@ -10,6 +10,8 @@ import pytest
 import pytest_asyncio
 from inspect_ai.util import ComposeConfig, ComposeService, SandboxEnvironment
 from inspect_ai.util._sandbox.self_check import self_check
+from inspect_sandboxes.novita._dind_env import NovitaDinDServiceEnvironment
+from inspect_sandboxes.novita._dind_project import NovitaDinDProject
 from inspect_sandboxes.novita._novita import (
     NovitaSandboxEnvironment,
     _run_id,
@@ -196,9 +198,6 @@ async def test_sample_init_multi_service_routes_to_dind(
     tmp_path: Any,
 ) -> None:
     """Multi-service compose calls into the DinD orchestrator with mapped params."""
-    from inspect_sandboxes.novita._dind_env import NovitaDinDServiceEnvironment
-    from inspect_sandboxes.novita._dind_project import NovitaDinDProject
-
     compose = tmp_path / "compose.yaml"
     compose.write_text(
         "services:\n  a:\n    image: alpine\n  b:\n    image: ubuntu\n"
@@ -236,6 +235,50 @@ async def test_sample_init_multi_service_routes_to_dind(
         assert kwargs["memory_mb"] == 8192
         assert kwargs["sandbox_timeout"] == 1800.0
         assert kwargs["metadata"]["created_by"] == "inspect-ai"
+
+
+@pytest.mark.asyncio
+async def test_dind_warns_on_allow_internet_access(
+    mock_sandbox: MagicMock,
+    tmp_path: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """DinD multi-service compose warns when x-novita.allow_internet_access is present."""
+    compose = tmp_path / "compose.yaml"
+    compose.write_text(
+        "services:\n  a:\n    image: alpine\n  b:\n    image: ubuntu\n"
+        "x-novita:\n  allow_internet_access: false\n"
+    )
+
+    project_sandbox = MagicMock()
+    project_sandbox.sandbox_id = "sb-dind-1"
+    project = NovitaDinDProject(
+        sandbox=project_sandbox,
+        project_name="inspect-x",
+        compose_path="/inspect/compose/compose.yaml",
+        services=["a", "b"],
+    )
+    real_envs = {
+        "a": NovitaDinDServiceEnvironment(project, "a", "/"),
+        "b": NovitaDinDServiceEnvironment(project, "b", "/"),
+    }
+    mock_cls = make_mock_async_sandbox_cls(mock_sandbox)
+    with (
+        patch("inspect_sandboxes.novita._novita.AsyncSandbox", new=mock_cls),
+        patch.object(
+            NovitaDinDServiceEnvironment,
+            "sample_init_dind",
+            new=AsyncMock(return_value=real_envs),
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        await NovitaSandboxEnvironment.task_init("test_task", str(compose))
+        await NovitaSandboxEnvironment.sample_init("test_task", str(compose), {})
+
+    assert any(
+        "x-novita.allow_internet_access is ignored for DinD" in r.message
+        for r in caplog.records
+    )
 
 
 @pytest.mark.asyncio
