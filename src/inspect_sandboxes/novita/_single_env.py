@@ -148,9 +148,9 @@ class NovitaSingleServiceEnvironment(SandboxEnvironment):
                         f"rm -f {shlex.quote(stdin_file)}", timeout=10
                     )
                 except Exception:
-                    # Best-effort cleanup: the SDK leaks raw httpx transport
-                    # errors, and an exception here would replace the exec
-                    # result.
+                    # Best-effort cleanup: the SDK leaks raw httpx/httpcore
+                    # transport errors, and an exception here would replace
+                    # the exec result.
                     pass
 
     @override
@@ -349,8 +349,8 @@ async def write_sandbox_file(
         try:
             await sandbox.commands.run(f"rm -f {quoted_temp}", user=user, timeout=60)
         except Exception:
-            # Best-effort cleanup: the SDK leaks raw httpx transport errors, and
-            # a cleanup failure must never mask the primary error.
+            # Best-effort cleanup: the SDK leaks raw httpx/httpcore transport
+            # errors, and a cleanup failure must never mask the primary error.
             pass
 
 

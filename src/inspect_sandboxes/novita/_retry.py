@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+import httpcore
 import httpx
 from novita_sandbox.core import (
     AuthenticationException,
@@ -46,12 +47,14 @@ _PERMANENT_EXCEPTIONS = (
 def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, _PERMANENT_EXCEPTIONS):
         return False
-    # The SDK lets raw httpx transport errors (e.g. ReadError from a dropped
-    # connection) escape unwrapped; retry those too. Timeouts are excluded —
-    # run_with_timeout_retry owns them.
-    if isinstance(exc, httpx.TimeoutException):
+    # The SDK lets raw httpx/httpcore transport errors (e.g. ReadError from a
+    # dropped connection) escape unwrapped; retry those too. Timeouts are
+    # excluded — run_with_timeout_retry owns them.
+    if isinstance(exc, (httpx.TimeoutException, httpcore.TimeoutException)):
         return False
-    return isinstance(exc, (SandboxException, httpx.TransportError))
+    return isinstance(
+        exc, (SandboxException, httpx.TransportError, httpcore.NetworkError)
+    )
 
 
 # Retry decorator for sandbox lifecycle and file I/O operations.
