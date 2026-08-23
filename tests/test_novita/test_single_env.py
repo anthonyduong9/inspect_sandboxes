@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpcore
 import httpx
 import pytest
 from inspect_ai.util import OutputLimitExceededError, SandboxEnvironmentLimits
@@ -194,7 +195,7 @@ async def test_exec_stdin_cleanup_failure_does_not_mask_result(
     mock_sandbox.commands.run = AsyncMock(
         side_effect=[
             _make_command_result(stdout="ok", exit_code=0),
-            httpx.ReadError("reset"),
+            httpcore.ReadError("reset"),
         ]
     )
     env = NovitaSingleServiceEnvironment(mock_sandbox)
@@ -228,10 +229,10 @@ async def test_exec_retries_transient_error(mock_sandbox: MagicMock) -> None:
 
 @pytest.mark.asyncio
 async def test_exec_retries_transport_error(mock_sandbox: MagicMock) -> None:
-    """A dropped connection (httpx.ReadError) leaks from the SDK; must be retried."""
+    """A dropped connection (httpcore.ReadError) leaks from the SDK; must be retried."""
     mock_sandbox.commands.run = AsyncMock(
         side_effect=[
-            httpx.ReadError("reset"),
+            httpcore.ReadError("reset"),
             _make_command_result(stdout="ok", exit_code=0),
         ]
     )
