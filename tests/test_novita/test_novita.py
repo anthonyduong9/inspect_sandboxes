@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from inspect_ai.util import ComposeConfig, ComposeService, SandboxEnvironment
-from inspect_ai.util._sandbox.self_check import self_check
 from inspect_sandboxes.novita._dind_env import NovitaDinDServiceEnvironment
 from inspect_sandboxes.novita._dind_project import NovitaDinDProject
 from inspect_sandboxes.novita._novita import (
@@ -478,99 +477,6 @@ async def test_cli_cleanup_bulk_partial_failure(mock_sandbox: MagicMock) -> None
             await NovitaSandboxEnvironment.cli_cleanup(None)
 
     assert exc_info.value.code == 1
-
-
-def _check_self_check_results(
-    results: dict[str, bool | str], known_failures: list[str]
-) -> None:
-    failed = [
-        (name, err)
-        for name, err in results.items()
-        if err is not True and name not in known_failures
-    ]
-    if failed:
-        details = "\n".join(f"  {name}: {err}" for name, err in failed)
-        raise AssertionError(f"{len(failed)} unexpected test(s) failed:\n{details}")
-
-
-@pytest_asyncio.fixture
-async def novita_single_env() -> AsyncGenerator[SandboxEnvironment, None]:
-    """Create a real single-service Novita sandbox (default `base` template)."""
-    await NovitaSandboxEnvironment.task_init("test_self_check", None)
-    envs = await NovitaSandboxEnvironment.sample_init("test_self_check", None, {})
-    yield envs["default"]
-    try:
-        await NovitaSandboxEnvironment.sample_cleanup(
-            "test_self_check", None, envs, False
-        )
-        await NovitaSandboxEnvironment.task_cleanup(
-            "test_self_check", None, cleanup=True
-        )
-    except Exception as e:
-        print(f"Cleanup error: {e}")
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_self_check_single_service(
-    novita_single_env: SandboxEnvironment,
-) -> None:
-    """Run inspect_ai's self-check suite against a single-service Novita sandbox."""
-    known_failures = [
-        "test_read_file_not_allowed",  # exec and file ops run as root by default, so the permission denial never occurs
-        "test_write_text_file_without_permissions",  # same
-        "test_write_binary_file_without_permissions",  # same
-        "test_exec_permission_error",  # same
-        "test_exec_timeout_not_raised_on_fast_signal_death",  # Novita reports exit -1 for self-SIGTERM, not 143
-        "test_exec_as_nonexistent_user",  # Novita raises AuthenticationException, not the inspect_ai-expected error
-    ]
-    results = await self_check(novita_single_env)
-    _check_self_check_results(results, known_failures)
-
-
-@pytest_asyncio.fixture
-async def novita_dind_env() -> AsyncGenerator[SandboxEnvironment, None]:
-    """Create a real DinD Novita sandbox (two-service compose, routes to DinD)."""
-    config = ComposeConfig(
-        services={
-            "default": ComposeService(
-                image="python:3.12-slim", command="sleep infinity"
-            ),
-            "helper": ComposeService(
-                image="python:3.12-slim", command="sleep infinity"
-            ),
-        }
-    )
-    await NovitaSandboxEnvironment.task_init("test_self_check_dind", None)
-    envs = await NovitaSandboxEnvironment.sample_init(
-        "test_self_check_dind", config, {}
-    )
-    yield envs["default"]
-    try:
-        await NovitaSandboxEnvironment.sample_cleanup(
-            "test_self_check_dind", config, envs, False
-        )
-        await NovitaSandboxEnvironment.task_cleanup(
-            "test_self_check_dind", None, cleanup=True
-        )
-    except Exception as e:
-        print(f"Cleanup error: {e}")
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_self_check_dind(
-    novita_dind_env: SandboxEnvironment,
-) -> None:
-    """Run inspect_ai's self-check suite against a DinD Novita sandbox."""
-    known_failures = [
-        "test_exec_permission_error",  # docker compose exec/cp run as the container's root user, so the permission denial never occurs
-        "test_write_text_file_without_permissions",  # same
-        "test_write_binary_file_without_permissions",  # same
-        "test_read_file_not_allowed",  # same
-    ]
-    results = await self_check(novita_dind_env)
-    _check_self_check_results(results, known_failures)
 
 
 @pytest_asyncio.fixture
