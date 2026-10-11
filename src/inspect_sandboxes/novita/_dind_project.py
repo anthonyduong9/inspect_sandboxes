@@ -50,7 +50,7 @@ from inspect_sandboxes._util.dind_project import (
 )
 
 from ._retry import standard_retry
-from ._single_env import FILE_REQUEST_TIMEOUT, write_sandbox_file
+from ._sandbox_utils import FILE_REQUEST_TIMEOUT, write_sandbox_file
 from ._template import TEMPLATE_NAME_PREFIX
 
 logger = getLogger(__name__)

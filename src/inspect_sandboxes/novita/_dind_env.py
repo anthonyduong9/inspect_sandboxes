@@ -39,7 +39,7 @@ from ._dind_project import (
     vm_exec,
 )
 from ._retry import run_with_timeout_retry
-from ._single_env import FILE_REQUEST_TIMEOUT, write_sandbox_file
+from ._sandbox_utils import FILE_REQUEST_TIMEOUT, write_sandbox_file
 
 logger = getLogger(__name__)
 

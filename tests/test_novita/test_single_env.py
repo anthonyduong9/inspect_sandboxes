@@ -312,7 +312,7 @@ async def test_write_file_large_uploads_in_chunks(mock_sandbox: MagicMock) -> No
     env = NovitaSingleServiceEnvironment(mock_sandbox)
     mock_sandbox.files.get_info = AsyncMock(side_effect=NotFoundException("missing"))
 
-    with patch("inspect_sandboxes.novita._single_env.UPLOAD_CHUNK_SIZE", 4):
+    with patch("inspect_sandboxes.novita._sandbox_utils.UPLOAD_CHUNK_SIZE", 4):
         await env.write_file("/workspace/big.bin", b"0123456789")
 
     write_calls = mock_sandbox.files.write.call_args_list
