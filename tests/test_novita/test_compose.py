@@ -7,12 +7,13 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from inspect_ai.util import ComposeConfig, ComposeService
+from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService
 from inspect_sandboxes.novita._compose import (
     DEFAULT_CPU_COUNT,
     DEFAULT_MEMORY_MB,
     _service_to_resources,
     extract_novita_timeout,
+    resolve_build_context,
     resolve_single_service_params,
     service_connection_ports,
 )
@@ -147,6 +148,7 @@ def test_build_resolves_dockerfile(tmp_path: Path) -> None:
     config = ComposeConfig(services={"default": ComposeService(build=".")})
     result = resolve_single_service_params(config, str(tmp_path / "compose.yaml"))
     assert result.dockerfile_path == str(df)
+    assert result.context_dir == str(tmp_path)
     assert result.image is None
 
 
@@ -342,3 +344,24 @@ def test_service_connection_ports_expose_warns_not_surfaced(
         ports = service_connection_ports(service)
     assert ports == []
     assert any("expose" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("build", "expected_relative"),
+    [
+        # Nested Dockerfile: context is the compose dir, not the Dockerfile's parent.
+        (ComposeBuild(context=".", dockerfile="docker/Dockerfile"), "."),
+        # Explicit context subdirectory.
+        (ComposeBuild(context="app", dockerfile="Dockerfile"), "app"),
+        # Default context (None -> ".").
+        (ComposeBuild(context=None, dockerfile=None), "."),
+        # String build form: the string is the context directory.
+        ("svc", "svc"),
+    ],
+)
+def test_resolve_build_context(
+    build: str | ComposeBuild,
+    expected_relative: str,
+) -> None:
+    compose_dir = Path("/tmp/compose")
+    assert resolve_build_context(build, compose_dir) == compose_dir / expected_relative

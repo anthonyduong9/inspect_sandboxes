@@ -5,7 +5,7 @@ from logging import getLogger
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from inspect_ai.util import ComposeConfig, ComposeService, warn_once
+from inspect_ai.util import ComposeBuild, ComposeConfig, ComposeService, warn_once
 
 from inspect_sandboxes._util.compose import (
     find_default_service,
@@ -35,6 +35,7 @@ class NovitaSingleServiceParams(NamedTuple):
 
     template: str | None
     dockerfile_path: str | None
+    context_dir: str | None
     image: str | None
     cpu_count: int
     memory_mb: int
@@ -43,6 +44,19 @@ class NovitaSingleServiceParams(NamedTuple):
     timeout: float | None
     metadata: dict[str, str]
     allow_internet_access: bool
+
+
+def resolve_build_context(build: str | ComposeBuild, compose_dir: Path) -> Path:
+    """Resolve the build *context* directory, separate from the Dockerfile path.
+
+    Compose's ``build.context`` is what gets shipped to the build; the Dockerfile
+    (``build.dockerfile``) may sit in a subdirectory of it, so the context is
+    *not* simply the Dockerfile's parent (e.g. context ``.`` with dockerfile
+    ``docker/Dockerfile`` -> context is ``.``, not ``docker/``).
+    """
+    if isinstance(build, str):
+        return compose_dir / build
+    return compose_dir / (build.context or ".")
 
 
 def resolve_single_service_params(
@@ -62,6 +76,7 @@ def resolve_single_service_params(
 
     template: str | None = extensions.get("template")
     dockerfile_path: Path | None = None
+    context_dir: Path | None = None
     image: str | None = None
     if template is not None:
         pass
@@ -69,6 +84,7 @@ def resolve_single_service_params(
         dockerfile_path = resolve_dockerfile_path(service.build, compose_dir)
         if not dockerfile_path.exists():
             raise FileNotFoundError(f"Dockerfile not found: {dockerfile_path}")
+        context_dir = resolve_build_context(service.build, compose_dir)
     elif service.image:
         image = service.image
     else:
@@ -104,6 +120,7 @@ def resolve_single_service_params(
     return NovitaSingleServiceParams(
         template=template,
         dockerfile_path=str(dockerfile_path) if dockerfile_path else None,
+        context_dir=str(context_dir) if context_dir else None,
         image=image,
         cpu_count=cpu_count,
         memory_mb=memory_mb,

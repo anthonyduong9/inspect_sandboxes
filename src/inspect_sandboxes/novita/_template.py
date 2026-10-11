@@ -84,16 +84,25 @@ def template_name_for_image(
 async def build_template_for_dockerfile(
     dockerfile_path: str,
     *,
+    context_dir: str | None = None,
     cpu_count: int = DEFAULT_CPU_COUNT,
     memory_mb: int = DEFAULT_MEMORY_MB,
 ) -> str:
-    """Build (or reuse cached) Novita template from a Dockerfile."""
+    """Build (or reuse cached) Novita template from a Dockerfile.
+
+    ``context_dir`` is the build context shipped to the build; it defaults to the
+    Dockerfile's parent, but is passed explicitly when compose's ``build.context``
+    points elsewhere (e.g. a Dockerfile nested under the context).
+    """
     name = template_name_for_dockerfile(
         dockerfile_path, cpu_count=cpu_count, memory_mb=memory_mb
     )
-    template = AsyncTemplate(
-        file_context_path=Path(dockerfile_path).parent
-    ).from_dockerfile(dockerfile_path)
+    context_path = (
+        Path(context_dir) if context_dir is not None else Path(dockerfile_path).parent
+    )
+    template = AsyncTemplate(file_context_path=context_path).from_dockerfile(
+        dockerfile_path
+    )
     trace_message(logger, "novita", f"Building template {name} from {dockerfile_path}")
     await AsyncTemplate.build(
         template, name=name, cpu_count=cpu_count, memory_mb=memory_mb

@@ -119,6 +119,7 @@ class NovitaSandboxEnvironment(SandboxEnvironment):
             if params.dockerfile_path is not None:
                 await build_template_for_dockerfile(
                     params.dockerfile_path,
+                    context_dir=params.context_dir,
                     cpu_count=params.cpu_count,
                     memory_mb=params.memory_mb,
                 )
@@ -161,6 +162,7 @@ class NovitaSandboxEnvironment(SandboxEnvironment):
             elif params.dockerfile_path is not None:
                 template = await build_template_for_dockerfile(
                     params.dockerfile_path,
+                    context_dir=params.context_dir,
                     cpu_count=params.cpu_count,
                     memory_mb=params.memory_mb,
                 )
