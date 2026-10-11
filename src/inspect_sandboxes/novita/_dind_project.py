@@ -17,11 +17,7 @@ to wait for the daemon to come up — no explicit start step.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import shlex
-import time
 import uuid
 from dataclasses import dataclass, field
 from logging import getLogger
@@ -41,8 +37,16 @@ from novita_sandbox.core import (
 
 from inspect_sandboxes._util.dind_compose import (
     compute_healthcheck_timeout,
-    discover_build_contexts,
-    rewrite_compose_yaml,
+)
+from inspect_sandboxes._util.dind_project import (
+    build_compose_command,
+    compose_down,
+    upload_build_contexts,
+    wait_for_docker_daemon,
+    wait_for_services,
+)
+from inspect_sandboxes._util.dind_project import (
+    discover_working_dir as _discover_working_dir,
 )
 
 from ._retry import standard_retry
@@ -123,50 +127,28 @@ async def compose_exec(
 
     Returns (exit_code, stdout, stderr).
     """
-    parts = [
-        "sudo",
-        "docker",
-        "compose",
-        "-p",
-        project.project_name,
-        "--project-directory",
-        COMPOSE_DIR,
-        "-f",
-        project.compose_path,
-        *subcommand,
-    ]
-    cmd = shlex.join(parts)
-    if env:
-        prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-        cmd = f"{prefix} {cmd}"
+    cmd = build_compose_command(
+        project.project_name, COMPOSE_DIR, project.compose_path, subcommand, env=env
+    )
     return await vm_exec(project.sandbox, cmd, timeout=timeout)
 
 
 async def _wait_for_docker_daemon(sandbox: AsyncSandbox) -> None:
-    """Poll ``docker info`` until the Docker daemon is responsive."""
-    logger.debug("Waiting for Docker daemon inside DinD sandbox...")
-    last_output = ""
-    # The loop is iteration-bounded, but a timed-out poll consumes its own 10s,
-    # so elapsed wall clock can exceed _DAEMON_TIMEOUT; report actual elapsed.
-    start = time.monotonic()
-    for _ in range(_DAEMON_TIMEOUT // _DAEMON_POLL_INTERVAL):
+    # Novita's commands.run raises on an over-time poll; `docker info` blocks
+    # while the socket-activated daemon is still starting, so a timed-out poll
+    # means "not ready yet", not failure. Translate it to a non-zero result so
+    # the shared loop keeps polling instead of propagating the timeout.
+    async def _run(cmd: str, t: int | None) -> tuple[int, str, str]:
         try:
-            exit_code, stdout, _ = await vm_exec(
-                sandbox, "sudo docker info", timeout=10
-            )
+            return await vm_exec(sandbox, cmd, timeout=t)
         except (TimeoutException, httpx.TimeoutException):
-            # docker info blocks while the socket-activated daemon is still
-            # starting; an over-time poll means "not ready yet", not failure.
-            last_output = "docker info timed out"
-            continue
-        if exit_code == 0:
-            logger.debug("Docker daemon is ready.")
-            return
-        last_output = stdout
-        await asyncio.sleep(_DAEMON_POLL_INTERVAL)
-    raise RuntimeError(
-        f"Docker daemon not ready after {time.monotonic() - start:.0f}s. "
-        f"Last 'docker info': {last_output}"
+            return (1, "docker info timed out", "")
+
+    await wait_for_docker_daemon(
+        _run,
+        info_cmd="sudo docker info",
+        timeout=_DAEMON_TIMEOUT,
+        poll_interval=_DAEMON_POLL_INTERVAL,
     )
 
 
@@ -175,38 +157,25 @@ async def _wait_for_services(
     expected: list[str],
     timeout: int = _SERVICE_TIMEOUT,
 ) -> None:
-    """Poll ``docker compose ps`` until all expected services are running."""
-    logger.debug("Waiting for compose services: %s", expected)
-    last_output = ""
-    # Same elapsed-vs-iterations note as _wait_for_docker_daemon.
-    start = time.monotonic()
-    for _ in range(timeout // _SERVICE_POLL_INTERVAL):
+    # Same timeout tolerance as the daemon wait: an over-time `compose ps` poll
+    # is "not ready yet", not failure.
+    async def _compose_exec(
+        proj: NovitaDinDProject,
+        subcommand: list[str],
+        *,
+        timeout: int | None = 60,
+    ) -> tuple[int, str, str]:
         try:
-            exit_code, output, _ = await compose_exec(
-                project,
-                ["ps", "--format", "json", "--status", "running"],
-                timeout=15,
-            )
+            return await compose_exec(proj, subcommand, timeout=timeout)
         except (TimeoutException, httpx.TimeoutException):
-            # Same as the daemon wait: an over-time poll is "not ready yet".
-            last_output = "docker compose ps timed out"
-            continue
-        if exit_code == 0 and output.strip():
-            running: set[str] = set()
-            for line in output.strip().splitlines():
-                try:
-                    entry = json.loads(line)
-                    running.add(entry.get("Service", ""))
-                except json.JSONDecodeError:
-                    continue
-            if set(expected) <= running:
-                logger.debug("All services running: %s", running)
-                return
-        last_output = output
-        await asyncio.sleep(_SERVICE_POLL_INTERVAL)
-    raise RuntimeError(
-        f"Not all services running after {time.monotonic() - start:.0f}s. "
-        f"Expected: {expected}. Last output: {last_output}"
+            return (1, "docker compose ps timed out", "")
+
+    await wait_for_services(
+        _compose_exec,
+        project,
+        expected,
+        timeout=timeout,
+        poll_interval=_SERVICE_POLL_INTERVAL,
     )
 
 
@@ -286,25 +255,16 @@ async def _upload_build_contexts(
 
     Returns the remote path to the (possibly-rewritten) compose file.
     """
-    compose_path = Path(compose_file)
-    compose_dir = compose_path.parent
-
-    context_map, needs_rewrite = discover_build_contexts(
-        config, compose_dir, BUILD_CONTEXT_DIR
+    return await upload_build_contexts(
+        config,
+        compose_file,
+        COMPOSE_DIR,
+        BUILD_CONTEXT_DIR,
+        upload_directory=lambda local, remote: _upload_directory(
+            sandbox, local, remote
+        ),
+        upload_file=lambda remote, data: write_sandbox_file(sandbox, remote, data),
     )
-
-    await _upload_directory(sandbox, compose_dir, COMPOSE_DIR)
-    for local_path, remote_path in context_map.items():
-        await _upload_directory(sandbox, local_path, remote_path)
-
-    if not needs_rewrite:
-        return f"{COMPOSE_DIR}/{compose_path.name}"
-
-    rewritten = rewrite_compose_yaml(config, compose_dir, context_map)
-    rewritten_remote = f"{COMPOSE_DIR}/compose.yaml"
-    await write_sandbox_file(sandbox, rewritten_remote, rewritten.encode("utf-8"))
-    logger.debug("Uploaded rewritten compose YAML to %s", rewritten_remote)
-    return rewritten_remote
 
 
 def _dind_template_name(*, cpu_count: int, memory_mb: int) -> str:
@@ -466,36 +426,9 @@ async def create_dind_project(
 
 
 async def destroy_dind_project(project: NovitaDinDProject) -> None:
-    """Tear down compose services inside the DinD sandbox.
-
-    Runs ``docker compose down`` best-effort. The caller is responsible
-    for killing the Novita sandbox afterwards.
-    """
-    try:
-        exit_code, stdout, _ = await compose_exec(
-            project,
-            ["down", "--remove-orphans", "--timeout", "10"],
-            timeout=30,
-        )
-        if exit_code != 0:
-            logger.warning("docker compose down failed: %s", stdout)
-    except Exception as e:
-        logger.warning("docker compose down error: %s", e)
+    """Best-effort ``compose down``; the caller kills the Novita sandbox after."""
+    await compose_down(compose_exec, project)
 
 
 async def discover_working_dir(project: NovitaDinDProject, service: str) -> str:
-    """Discover a service's working directory via ``pwd``.
-
-    Returns ``/`` if the query fails (e.g. service has no shell).
-    """
-    exit_code, stdout, _ = await compose_exec(
-        project,
-        ["exec", "-T", service, "pwd"],
-        timeout=10,
-    )
-    if exit_code == 0 and stdout.strip():
-        return stdout.strip()
-    logger.warning(
-        "Failed to get working directory for service '%s', defaulting to /", service
-    )
-    return "/"
+    return await _discover_working_dir(compose_exec, project, service)

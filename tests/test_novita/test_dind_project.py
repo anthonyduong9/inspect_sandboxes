@@ -161,7 +161,7 @@ async def test_wait_for_docker_daemon_times_out() -> None:
         patch("inspect_sandboxes.novita._dind_project._DAEMON_TIMEOUT", 2),
         patch("inspect_sandboxes.novita._dind_project._DAEMON_POLL_INTERVAL", 1),
         patch(
-            "inspect_sandboxes.novita._dind_project.asyncio.sleep",
+            "inspect_sandboxes._util.dind_project.asyncio.sleep",
             new_callable=AsyncMock,
         ),
     ):
@@ -210,7 +210,7 @@ async def test_wait_for_services_times_out() -> None:
         ),
         patch("inspect_sandboxes.novita._dind_project._SERVICE_POLL_INTERVAL", 1),
         patch(
-            "inspect_sandboxes.novita._dind_project.asyncio.sleep",
+            "inspect_sandboxes._util.dind_project.asyncio.sleep",
             new_callable=AsyncMock,
         ),
     ):
@@ -369,7 +369,7 @@ async def test_upload_build_contexts_retries_transport_error() -> None:
             new_callable=AsyncMock,
         ),
         patch(
-            "inspect_sandboxes.novita._dind_project.discover_build_contexts",
+            "inspect_sandboxes._util.dind_project.discover_build_contexts",
             return_value=({"/elsewhere/web": "/inspect/contexts/web"}, True),
         ),
     ):
