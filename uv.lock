@@ -1378,6 +1378,7 @@ dependencies = [
     { name = "inspect-ai" },
     { name = "modal" },
     { name = "novita-sandbox" },
+    { name = "pathspec" },
     { name = "tenacity" },
 ]
 
@@ -1417,6 +1418,7 @@ requires-dist = [
     { name = "inspect-ai", specifier = ">=0.3.211" },
     { name = "modal", specifier = ">=1.5.0" },
     { name = "novita-sandbox", specifier = ">=2.0.8" },
+    { name = "pathspec", specifier = ">=0.12.1" },
     { name = "tenacity", specifier = ">=9.1.4" },
 ]
 

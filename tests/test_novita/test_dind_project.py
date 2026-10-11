@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -12,6 +13,7 @@ from inspect_sandboxes.novita._dind_project import (
     _dind_template_name,
     _ensure_dind_template,
     _upload_build_contexts,
+    _upload_directory,
     _wait_for_docker_daemon,
     _wait_for_services,
     compose_exec,
@@ -377,3 +379,38 @@ async def test_upload_build_contexts_retries_transport_error() -> None:
 
     assert remote_path == "/inspect/compose/compose.yaml"
     assert sandbox.files.write.await_count == 2
+
+
+async def _upload_directory_paths(tmp_path: Path) -> set[str]:
+    """Run _upload_directory against a mock sandbox; return the uploaded paths."""
+    sandbox = MagicMock()
+    sandbox.files = MagicMock()
+    sandbox.files.make_dir = AsyncMock()
+    sandbox.files.write_files = AsyncMock()
+    await _upload_directory(sandbox, tmp_path, "/remote")
+    (entries,) = sandbox.files.write_files.call_args.args
+    return {entry["path"] for entry in entries}
+
+
+@pytest.mark.asyncio
+async def test_upload_directory_honors_dockerignore(tmp_path: Path) -> None:
+    """The DinD walk drops files matched by a .dockerignore glob."""
+    (tmp_path / "keep.txt").write_text("keep")
+    (tmp_path / "secret.env").write_text("secret")
+    (tmp_path / ".dockerignore").write_text("*.env\n")
+
+    uploaded = await _upload_directory_paths(tmp_path)
+    assert "/remote/keep.txt" in uploaded
+    assert "/remote/secret.env" not in uploaded
+
+
+@pytest.mark.asyncio
+async def test_upload_directory_drops_churn(tmp_path: Path) -> None:
+    """The DinD walk drops the hardcoded churn set even without a .dockerignore."""
+    (tmp_path / "keep.txt").write_text("keep")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "lib.py").write_text("x")
+
+    uploaded = await _upload_directory_paths(tmp_path)
+    assert "/remote/keep.txt" in uploaded
+    assert "/remote/.venv/lib.py" not in uploaded

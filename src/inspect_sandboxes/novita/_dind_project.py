@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pathspec
 from inspect_ai.util import ComposeConfig
 from novita_sandbox.core import (
     AsyncSandbox,
@@ -64,6 +65,12 @@ DEFAULT_DIND_CPU = 2
 DEFAULT_DIND_MEMORY_MB = 4096  # docker daemon + at least one service comfortably
 
 DOCKER_CE_VERSION = "5:29.5.2-1~ubuntu.24.04~noble"
+
+# Build-context churn always dropped from DinD uploads, on top of any
+# .dockerignore: never build inputs, and `logs` would otherwise bust the
+# template cache every run.
+_IGNORED_DIR_NAMES = {".git", "__pycache__", "logs", ".venv"}
+_IGNORED_FILE_NAMES = {".DS_Store"}
 
 
 @dataclass
@@ -204,13 +211,43 @@ async def _wait_for_services(
 
 
 @standard_retry
+def _is_ignored_context_path(rel_path: Path) -> bool:
+    for part in rel_path.parts:
+        if part in _IGNORED_DIR_NAMES:
+            return True
+    name = rel_path.name
+    return name in _IGNORED_FILE_NAMES or name.endswith(".pyc")
+
+
+def _load_dockerignore(context_dir: Path) -> pathspec.PathSpec[Any] | None:
+    """Parse ``.dockerignore`` at the context root, or None if absent.
+
+    Uses pathspec's gitignore engine — the closest widely-available match for
+    Docker's ``.dockerignore`` glob semantics (``**``, ``!`` negation, trailing
+    ``/``). The hardcoded churn excludes in ``_is_ignored_context_path`` still
+    apply on top: unlike Docker we always drop ``.git``/caches/``logs``/``.venv``
+    (never build inputs, and ``logs`` would otherwise bust the cache every run).
+    """
+    dockerignore = context_dir / ".dockerignore"
+    if not dockerignore.is_file():
+        return None
+    lines = dockerignore.read_text(encoding="utf-8", errors="replace").splitlines()
+    return pathspec.GitIgnoreSpec.from_lines(lines)
+
+
 async def _upload_directory(
     sandbox: AsyncSandbox,
     local_dir: str | Path,
     remote_dir: str,
 ) -> None:
-    """Upload a local directory to the sandbox recursively."""
+    """Upload a local directory to the sandbox recursively.
+
+    Honors ``.dockerignore`` at ``local_dir`` plus the hardcoded churn set so
+    the DinD upload matches what a single-env build would ship (the Novita SDK
+    filters the single-env path itself; DinD does its own walk).
+    """
     local_dir = Path(local_dir)
+    ignore_spec = _load_dockerignore(local_dir)
     # files.write_files's WriteEntry is a TypedDict; the SDK accepts plain dicts.
     entries: list[Any] = []
 
@@ -222,6 +259,10 @@ async def _upload_directory(
             if not os.access(local_path, os.R_OK):
                 continue
             rel_path = local_path.relative_to(local_dir)
+            if _is_ignored_context_path(rel_path):
+                continue
+            if ignore_spec is not None and ignore_spec.match_file(rel_path.as_posix()):
+                continue
             remote_path = f"{remote_dir}/{rel_path.as_posix()}"
             entries.append({"path": remote_path, "data": local_path.read_bytes()})
 
