@@ -119,7 +119,7 @@ async def upload_build_contexts(
 
 
 async def wait_for_docker_daemon(
-    run: VMExec,
+    vm_exec: VMExec,
     *,
     info_cmd: str,
     timeout: int,
@@ -128,14 +128,14 @@ async def wait_for_docker_daemon(
 ) -> None:
     """Poll ``docker info`` until the Docker daemon is responsive.
 
-    ``run`` is the provider's VM command runner; ``info_cmd`` is the (possibly
+    ``vm_exec`` is the provider's VM command runner; ``info_cmd`` is the (possibly
     sudo-prefixed) ``docker info`` command. On timeout, if ``log_tail_cmd`` is
     given, its output is appended to the error to aid diagnosis.
     """
     logger.debug("Waiting for Docker daemon inside DinD VM...")
     last_output = ""
     for _ in range(timeout // poll_interval):
-        result = await run(info_cmd, 10)
+        result = await vm_exec(info_cmd, 10)
         if result[0] == 0:
             logger.debug("Docker daemon is ready.")
             return
@@ -147,7 +147,7 @@ async def wait_for_docker_daemon(
         f"Last 'docker info' output: {last_output}"
     )
     if log_tail_cmd is not None:
-        tail = await run(log_tail_cmd, 5)
+        tail = await vm_exec(log_tail_cmd, 5)
         msg += f"\ndockerd log:\n{tail[1]}"
     raise RuntimeError(msg)
 
